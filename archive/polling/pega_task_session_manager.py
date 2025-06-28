@@ -23,7 +23,7 @@ from task_classes.delete_task import DeleteTask
 from task_classes.transfer_task import TransferTask
 from backend.utils.database.db import get_db
 from backend.utils.database.db import database
-from backend.utils.logging.colored_logger import setup_logger
+from backend.colored_logger import setup_logger
 
 logger = setup_logger(__name__)
 

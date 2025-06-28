@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 
 import httpx
 from redis.asyncio import Redis
@@ -17,63 +18,81 @@ from ..storage import set_latest_poll_result
 POLL_INTERVAL_DEFAULT = int(os.getenv("POLL_INTERVAL", "10"))
 BASE_URL = os.getenv("POLLER_URL", "http://localhost:9000")
 RECENT_DELETIONS_CACHE_SIZE = 500
-
-logger = logging.getLogger("poller")
+SEMAPHORE_LIMIT = 50  # Tune this based on your scaling/testing
 
 
 async def delete_external_task(api, task_id, recent_deletions, cache, max_retries=3):
+    my_logger = logging.getLogger("poller.delete_external_task")
     if task_id in recent_deletions:
-        logger.info(f"Task {task_id} was recently deleted, skipping redundant DELETE.")
+        my_logger.info(f"Task {task_id} was recently deleted, skipping redundant DELETE.")
         return
     for attempt in range(1, max_retries + 1):
         try:
             deleted = await api.delete_task(task_id)
             if deleted:
-                logger.info(f"Deleted invalid external task {task_id} (attempt {attempt})")
+                my_logger.info(f"Deleted invalid external task {task_id} (attempt {attempt})")
                 recent_deletions.add(task_id)
                 await cache.delete(task_id)
                 if len(recent_deletions) > RECENT_DELETIONS_CACHE_SIZE:
                     recent_deletions.pop()
                 return
             else:
-                logger.warning(f"Failed to delete task {task_id}: not a valid status code")
+                my_logger.warning(f"Failed to delete task {task_id}: not a valid status code")
         except Exception as e:
-            logger.error(f"Error deleting task {task_id} (attempt {attempt}): {e}")
+            my_logger.error(f"Error deleting task {task_id} (attempt {attempt}): {e}")
         await asyncio.sleep(2 ** attempt)
 
 
 async def patch_external_task(api, task, patch_data, cache):
+    my_logger = logging.getLogger("poller.patch_external_task")
     try:
         updated_details = await api.patch_task(task.id, patch_data)
-        logger.info(f"Patched task {task.id} with {patch_data}")
+        my_logger.info(f"Patched task {task.id} with {patch_data}")
         audit_log("patched", task, reason=f"Patched with {patch_data}")
         await cache.set(task.id, updated_details)
         return True
     except Exception as e:
-        logger.error(f"Error patching task {task.id}: {e}")
+        my_logger.error(f"Error patching task {task.id}: {e}")
     return False
 
 
-async def fetch_and_cache_task_details(tasks, api, cache):
+async def fetch_and_cache_task_details(tasks, api, cache, semaphore_limit=SEMAPHORE_LIMIT):
     """
-    Fetch detailed info for all tasks concurrently and update each Task object.
-    Uses cache if available, otherwise fetches and caches from API.
-    Returns a list of Task objects with details hydrated.
+    Fetch task details concurrently with bounded concurrency and error handling.
+    Logs cache hits, misses, and errors.
     """
+    my_logger = logging.getLogger("poller.fetch_and_cache")
+    semaphore = asyncio.BoundedSemaphore(semaphore_limit)
+
     async def get_and_update(t):
-        details = await cache.get(t.id)
-        if not details:
-            details = await api.fetch_task_details(t.id)
-            await cache.set(t.id, details)
-        for k, v in details.items():
-            setattr(t, k, v)
-        return t
+        async with semaphore:
+            try:
+                start = time.monotonic()
+                details = await cache.get(t.id)
+                if details:
+                    my_logger.debug(f"Cache hit for task {t.id}")
+                else:
+                    my_logger.info(f"Cache miss for task {t.id}, fetching from API")
+                    details = await api.fetch_task_details(t.id)
+                    await cache.set(t.id, details)
+                for k, v in details.items():
+                    setattr(t, k, v)
+                elapsed = time.monotonic() - start
+                if elapsed > 2.0:
+                    my_logger.warning(f"Fetching details for task {t.id} took {elapsed:.2f}s")
+                return t
+            except Exception as e:
+                my_logger.error(f"Error fetching details for task {getattr(t, 'id', 'unknown')}: {e}")
+                return None
 
     coros = [get_and_update(t) for t in tasks]
-    return await asyncio.gather(*coros)
+    results = await asyncio.gather(*coros)
+    # Filter out any that failed
+    return [t for t in results if t is not None]
 
 
 async def poll_forever(handle_payload):
+    my_logger = logging.getLogger("poller.poll_forever")
     redis = Redis.from_url(REDIS_URL, decode_responses=True)
     cache = TaskCache(redis)
     last_result_hash = None
@@ -90,7 +109,7 @@ async def poll_forever(handle_payload):
                 except Exception:
                     pass
 
-                logger.info("Polling external system...")
+                my_logger.info("Polling external system...")
 
                 workbasket_tasks_coro = api.fetch_workbasket()
                 hostlers_raw = await api.fetch_hostlers_summary()
@@ -115,7 +134,7 @@ async def poll_forever(handle_payload):
                     if allowed:
                         valid_tasks.append(t)
                     elif fix_data:
-                        logger.info(f"Attempting to patch task {t.id}: {fix_data}")
+                        my_logger.info(f"Attempting to patch task {t.id}: {fix_data}")
                         patched = await patch_external_task(api, t, fix_data, cache)
                         if patched:
                             audit_log("patched", t, reason)
@@ -126,7 +145,7 @@ async def poll_forever(handle_payload):
                         invalid_tasks.append((t, reason))
 
                 for t, reason in invalid_tasks:
-                    logger.warning(f"Deleting task {t.id} due to failed business rules: {reason}")
+                    my_logger.warning(f"Deleting task {t.id} due to failed business rules: {reason}")
                     audit_log("deleted", t, reason)
                     await delete_external_task(api, t.id, recent_deletions, cache)
 
@@ -155,19 +174,19 @@ async def poll_forever(handle_payload):
 
                 result_hash = hash_result(result)
                 if result_hash != last_result_hash:
-                    logger.info("Poll result changed, updating Redis and invoking handlers.")
+                    my_logger.info("Poll result changed, updating Redis and invoking handlers.")
                     await set_latest_poll_result(result.model_dump(), redis)
                     await handle_payload(result, redis)
                     last_result_hash = result_hash
                 else:
-                    logger.info("Poll result unchanged, skipping Redis update.")
+                    my_logger.info("Poll result unchanged, skipping Redis update.")
 
-                logger.info(f"Polling cycle: {len(final_workbasket)} workbasket tasks, "
-                            f"{sum(len(v) for v in final_hostler_tasks.values())} hostler tasks, "
-                            f"{len(invalid_tasks)} deletions, "
-                            f"poll interval={poll_interval}s")
+                my_logger.info(f"Polling cycle: {len(final_workbasket)} workbasket tasks, "
+                               f"{sum(len(v) for v in final_hostler_tasks.values())} hostler tasks, "
+                               f"{len(invalid_tasks)} deletions, "
+                               f"poll interval={poll_interval}s")
 
             except Exception as e:
-                logger.error(f"[Poller] Error: {e}")
+                my_logger.error(f"[Poller] Error: {e}")
 
             await asyncio.sleep(poll_interval)

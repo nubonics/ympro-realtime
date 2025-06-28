@@ -1,6 +1,7 @@
 import httpx
 from .models import Task
 
+
 class ExternalApiClient:
     def __init__(self, client: httpx.AsyncClient, base_url: str):
         self.client = client

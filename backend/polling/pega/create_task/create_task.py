@@ -1,53 +1,35 @@
-import json
-import re
-import time
-import urllib
-from os import makedirs
-from os.path import exists
-from uuid import uuid4
-
-from lxml import html
-
-from backend.utils.database.db import get_db
+from backend.polling.pega.create_task.create_task_parser import extract_pzuiactionzzz, get_pzTransactionId, \
+    get_PD_pzRenderFeedContext, get_PD_pzFeedParams
+from backend.polling.pega.session_manager.debug import save_html_to_file
 from backend.colored_logger import setup_logger
+
+import time
+from uuid import uuid4
 logger = setup_logger(__name__)
 
 
 class CreateTask:
     def __init__(
-            self,
-            yard_type_task,
-            trailer_number,
-            door_number,
-            assigned_to,
-            status='PENDING',
-            locked=False,
-            general_note=str(),
-            priority='Normal'
+        self,
+        yard_type_task,
+        trailer_number,
+        door_number,
+        assigned_to,
+        status='PENDING',
+        locked=False,
+        general_note=str(),
+        priority='Normal',
+        hostler_store=None,  # Pass HostlerStore instance!
     ):
-        logger.debug(f'yard_type_task: {yard_type_task}')
-        logger.debug(f'trailer_number: {trailer_number}')
-        logger.debug(f'door_number: {door_number}')
-        logger.debug(f'status: {status}')
-        logger.debug(f'locked: {locked}')
-        logger.debug(f'general_note: {general_note}')
-        logger.debug(f'priority: {priority}')
-        # Inherited
-        self.async_client = None  # INHERITED
-        self.pzHarnessID = None  # INHERITED
-        self.base_url = None  # INHERITED
-        self.pega_base_url_to_create_task = None  # INHERITED
-        self.csrf_token = None  # INHERITED
-        self.fingerprint_token = None  # INHERITED
-
-        # Before step 1
+        self.async_client = None
+        self.pzHarnessID = None
+        self.base_url = None
+        self.pega_base_url_to_create_task = None
+        self.csrf_token = None
+        self.fingerprint_token = None
         self.assigned_to_checker_id = None
-
         self.async_counter = 1
-
-        # params
         self.yard_type_task = self.format_yard_type_task(yard_type_task=yard_type_task)
-        logger.debug(f'self.yard_type_task after formatting: {self.yard_type_task}')
         self.trailer_number = trailer_number
         self.door_number = door_number
         self.assigned_to = assigned_to
@@ -55,66 +37,32 @@ class CreateTask:
         self.locked = locked
         self.general_note = general_note
         self.priority = priority
-
-        # Step 3
         self.pzuiactionzzz = None
-
-        # Step 4
         self.pzTransactionId_1 = None
         self.pzTransactionId_2 = None
         self.PD_pzFeedParams = None
         self.PD_pzRenderFeedContext = None
-
-        # Step 5
-        self.assigned_to = assigned_to
-
-        logger.debug(f'self.assigned_to: {self.assigned_to}')
-        logger.debug(f'self.assigned_to_checker_id: {self.assigned_to_checker_id}')
+        self.hostler_store = hostler_store
 
     async def set_checker_id(self):
-        # In an async context (e.g., within an async initializer or method), set the checker ID:
-        if self.assigned_to and self.assigned_to.lower() != "workbasket":
-            self.assigned_to_checker_id = await self.lookup_checker_id(self.assigned_to)
+        if self.assigned_to and self.assigned_to.lower() != "workbasket" and self.hostler_store:
+            self.assigned_to_checker_id = await self.hostler_store.lookup_checker_id(self.assigned_to)
         else:
             self.assigned_to_checker_id = ""
 
-    # Async lookup function using your database
-    @staticmethod
-    async def lookup_checker_id(assigned_name: str) -> str:
-        db = await get_db()
-        query = "SELECT checker_id FROM hostler WHERE LOWER(name) = LOWER(:name)"
-        row = await db.fetch_one(query, values={"name": assigned_name})
-        return row["checker_id"] if row else ""
-
     @staticmethod
     def format_yard_type_task(yard_type_task):
-        if yard_type_task.lower() == 'bring':
-            return 'BringToDock'
-        elif yard_type_task.lower() == 'pull':
-            return 'RemoveFromDock'
-        elif yard_type_task.lower() == 'hook':
-            return 'Hook Trailer'
-
-    async def create_task(self):
-        await self.set_checker_id()
-        await self.step1()  # Tab 1
-        await self.step3()  # Tab 2
-        await self.step5()  # Tab 3
-        await self.step2()  # Tab 4
-        await self.step6()  # Tab 5
-        await self.step4()  # Tab 6
+        types = {'bring': 'BringToDock', 'pull': 'RemoveFromDock', 'hook': 'Hook Trailer'}
+        return types.get(yard_type_task.lower(), yard_type_task)
 
     def set_pega_data(self, base_url, pzHarnessID, async_client, csrf_token, fingerprint_token):
         self.base_url = base_url
         self.pzHarnessID = pzHarnessID
-        # tab_thread_id = f'_TabThread_{str(int(time.time()))}'
-        base_url_str = str(self.base_url)  # e.g. "https://ymg.estes-express.com/prweb/app/default/.../!STANDARD"
+        base_url_str = str(self.base_url)
         self.pega_base_url_to_create_task = f"{base_url_str.replace('STANDARD', 'DCSPA_YardCoordinator')}"
         self.async_client = async_client
         self.csrf_token = csrf_token
         self.fingerprint_token = fingerprint_token
-
-        logger.debug(f'self.async_client.headers: {self.async_client.headers}')
         headers = {
             "Accept": "*/*",
             "Accept-Language": "en-US,en;q=0.9",
@@ -124,7 +72,6 @@ class CreateTask:
             "DNT": "1",
             "Origin": "https://ymg.estes-express.com",
             "Pragma": "no-cache",
-            # "Referer": "https://ymg.estes-express.com/prweb/app/YardMgmt_/hHmgZBid4qBLDA0jxjIe6kTOQ39_jCSD*/!STANDARD",
             "Sec-Fetch-Dest": "empty",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
@@ -132,175 +79,15 @@ class CreateTask:
             "X-Requested-With": "XMLHttpRequest",
         }
         self.async_client.headers.update(headers)
-        logger.debug(f'self.async_client.headers: {self.async_client.headers}')
-        logger.debug(f'self.base_url: {self.base_url}')
-        logger.debug(f'self.pzHarnessID: {self.pzHarnessID}')
-        logger.debug(f'self.pega_base_url_to_create_task: {self.pega_base_url_to_create_task}')
-        logger.debug(f'self.csrf_token: {self.csrf_token}')
-        logger.debug(f'self.fingerprint_token: {self.fingerprint_token}')
 
-    @staticmethod
-    def save_html_to_file(content, step: int, enabled: bool = False):
-        if not enabled:
-            return
-        try:
-            file_path = f"create_task_debug/step_{step}.html"
-            if not exists("create_task_debug"):
-                makedirs("create_task_debug", exist_ok=True)
-            if isinstance(content, str):
-                content = content.encode("utf-8")
-            with open(file_path, "wb") as file:
-                file.write(content)
-            logger.debug(f"Saved HTML content for step {step} to {file_path}")
-        except Exception as e:
-            logger.error(f"Failed to save HTML content for step {step}: {e}")
-
-    @staticmethod
-    def _parse_html(html_content: str):
-        """
-        Helper function that attempts to parse HTML content and returns the resulting tree.
-        Logs any errors encountered.
-        """
-        try:
-            tree = html.fromstring(html_content)
-            logger.debug("HTML parsed successfully.")
-            return tree
-        except Exception as e:
-            logger.error("Failed to parse HTML: %s", e)
-            return None
-
-    def extract_pzuiactionzzz(self, html_content: str) -> str | None:
-        """
-        Extracts the pzuiactionzzz value from a script tag in the provided HTML.
-        Looks for the pattern: pzuiactionzzz\u003d<value> (until the next double quote),
-        URL‑decodes the raw value, and returns it.
-        """
-        logger.info("Starting extraction of pzuiactionzzz from HTML content.")
-        tree = self._parse_html(html_content)
-        if tree is None:
-            return None
-
-        xpath_expr = "//script[contains(text(), '$pxActionString') and contains(text(), 'pzuiactionzzz')]"
-        script_elements = tree.xpath(xpath_expr)
-        if not script_elements:
-            logger.warning("No script elements found with xpath: %s", xpath_expr)
-            return None
-
-        for script in script_elements:
-            script_text = script.text_content()
-            logger.debug("Script text (first 100 chars): %s", script_text[:100])
-            match = re.search(r'pzuiactionzzz\\u003d([^"]+)', script_text)
-            if match:
-                raw_value = match.group(1)
-                logger.info("Found raw pzuiactionzzz value: %s", raw_value)
-                decoded_value = urllib.parse.unquote(raw_value)
-                logger.info("Decoded pzuiactionzzz value: %s", decoded_value)
-                return decoded_value
-
-        logger.warning("pzuiactionzzz value not found in any script element.")
-        return None
-
-    def get_pzTransactionId(self, html_content: str) -> str | None:
-        """
-        Extracts the pzTransactionId value from a script tag that contains the metadata tree.
-        It looks for a substring like "pzTransactionId=VALUE" and returns VALUE.
-        """
-        logger.info("Extracting pzTransactionId from HTML content.")
-        tree = self._parse_html(html_content)
-        if tree is None:
-            return None
-
-        xpath_expr = "//script[contains(text(), 'pega.ui.jittemplate.addMetadataTree')]"
-        script_elements = tree.xpath(xpath_expr)
-        if not script_elements:
-            logger.warning("No script elements found with xpath: %s", xpath_expr)
-            return None
-
-        script_text = script_elements[0].text
-        if not script_text:
-            logger.warning("Script text is empty for xpath: %s", xpath_expr)
-            return None
-
-        logger.info("Searching for pzTransactionId in the script text.")
-        match = re.search(r"pzTransactionId=([^&\"\s]+)", script_text)
-        if match:
-            transaction_id = match.group(1)
-            logger.info("Found pzTransactionId: %s", transaction_id)
-            return transaction_id
-
-        logger.warning("pzTransactionId not found in script text.")
-        return None
-
-    def get_PD_pzRenderFeedContext(self, html_content: str) -> str | None:
-        """
-        Extracts the PD_pzRenderFeedContext value from an input element in the provided HTML.
-        It locates an <input> whose name attribute contains "PD_pzRenderFeedContext" and returns
-        the portion of the name up to (but not including) the next '$'.
-        """
-        logger.info("Extracting PD_pzRenderFeedContext from HTML content.")
-        tree = self._parse_html(html_content)
-        if tree is None:
-            return None
-
-        xpath_expr = "//input[contains(@name, 'PD_pzRenderFeedContext')]"
-        input_elements = tree.xpath(xpath_expr)
-        if not input_elements:
-            logger.warning("No input elements found with xpath: %s", xpath_expr)
-            return None
-
-        name_attr = input_elements[0].get("name")
-        if not name_attr:
-            logger.warning("Input element's name attribute is empty.")
-            return None
-
-        match = re.search(r"(\$PD_pzRenderFeedContext_[^$]+)", name_attr)
-        if match:
-            value = match.group(1)
-            logger.info("Extracted PD_pzRenderFeedContext: %s", value)
-            return value
-
-        logger.warning("PD_pzRenderFeedContext pattern not found in name attribute: %s", name_attr)
-        return None
-
-    def get_PD_pzFeedParams(self, html_content: str) -> str | None:
-        """
-        Extracts the PD_pzFeedParams key from the data-json attribute of the <div id="AJAXCT">.
-        The HTML stores the key with a "D_" prefix, so this function replaces it with "PD_".
-        Returns a string such as "PD_pzFeedParams_pa1632792125632029pz", or None if not found.
-        """
-        logger.info("Extracting PD_pzFeedParams from HTML content.")
-        tree = self._parse_html(html_content)
-        if tree is None:
-            return None
-
-        xpath_expr = "//div[@id='AJAXCT']"
-        div_elements = tree.xpath(xpath_expr)
-        if not div_elements:
-            logger.warning("No <div> found with id 'AJAXCT'.")
-            return None
-
-        div_elem = div_elements[0]
-        data_json = div_elem.get("data-json")
-        if not data_json:
-            logger.warning("data-json attribute is missing in <div id='AJAXCT'>.")
-            return None
-
-        try:
-            data = json.loads(data_json)
-            logger.debug("Parsed JSON from data-json attribute.")
-        except Exception as e:
-            logger.error("Error parsing JSON from data-json: %s", e)
-            return None
-
-        initial = data.get("Initial", {})
-        for key in initial:
-            if key.startswith("D_pzFeedParams"):
-                pd_key = key.replace("D_", "PD_", 1)
-                logger.info("Extracted PD_pzFeedParams: %s", pd_key)
-                return pd_key
-
-        logger.warning("No key starting with 'D_pzFeedParams' found in JSON.")
-        return None
+    async def create_task(self):
+        await self.set_checker_id()
+        await self.step1()
+        await self.step3()
+        await self.step5()
+        await self.step2()
+        await self.step6()
+        await self.step4()
 
     async def step1(self):
         logger.debug('Create Task - Starting Step # 1')
@@ -427,16 +214,16 @@ class CreateTask:
             params=params,
             follow_redirects=True
         )
-        self.save_html_to_file(content=response.content, step=1)
+        save_html_to_file(content=response.content, step=1)
         logger.debug(f'step 1 response code: {response.status_code}')
         logger.debug(f'step # 1 response url: {response.url}')
         assert response.status_code == 200 or 303
 
         content = response.content
-        self.pzuiactionzzz = self.extract_pzuiactionzzz(html_content=content)
-        self.pzTransactionId_1 = self.get_pzTransactionId(html_content=content)
-        self.PD_pzRenderFeedContext = self.get_PD_pzRenderFeedContext(html_content=content)
-        self.PD_pzFeedParams = self.get_PD_pzFeedParams(html_content=content)
+        self.pzuiactionzzz = extract_pzuiactionzzz(html_content=content)
+        self.pzTransactionId_1 = get_pzTransactionId(html_content=content)
+        self.PD_pzRenderFeedContext = get_PD_pzRenderFeedContext(html_content=content)
+        self.PD_pzFeedParams = get_PD_pzFeedParams(html_content=content)
         del content
 
         logger.debug(f'self.pzuiactionzzz: {self.pzuiactionzzz}')
@@ -560,7 +347,7 @@ class CreateTask:
             follow_redirects=True
         )
 
-        self.save_html_to_file(content=response.content, step=3)
+        save_html_to_file(content=response.content, step=3)
 
         logger.debug(f'step 2 response code: {response.status_code}')
         assert response.status_code == 200
@@ -744,9 +531,9 @@ class CreateTask:
             follow_redirects=True
         )
 
-        self.pzTransactionId_2 = self.get_pzTransactionId(html_content=response.content)
+        self.pzTransactionId_2 = get_pzTransactionId(html_content=response.content)
 
-        self.save_html_to_file(content=response.content, step=4)
+        save_html_to_file(content=response.content, step=4)
 
         logger.debug(f'step 3 response code: {response.status_code}')
 
@@ -913,7 +700,7 @@ class CreateTask:
             follow_redirects=True
         )
 
-        self.save_html_to_file(content=response.content, step=5)
+        save_html_to_file(content=response.content, step=5)
 
         logger.debug(f'step 5 response code: {response.status_code}')
 
@@ -1245,7 +1032,7 @@ class CreateTask:
             data=data,
             follow_redirects=True
         )
-        self.save_html_to_file(content=response.content, step=5)
+        save_html_to_file(content=response.content, step=5)
         logger.debug(f'step 5 response code: {response.status_code}')
         logger.debug(f'step # 5 pega url: {self.pega_base_url_to_create_task}')
         logger.debug(f'step 5 response url: {response.url}')
@@ -1376,7 +1163,7 @@ class CreateTask:
             data=data,
             follow_redirects=True
         )
-        self.save_html_to_file(content=response.content, step=6)
+        save_html_to_file(content=response.content, step=6)
         logger.debug(f'step 6 response code: {response.status_code}')
         logger.debug(f'step # 6 pega url: {self.pega_base_url_to_create_task}')
         logger.debug(f'step 56 response url: {response.url}')
