@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 from typing import List, Optional, Dict
 
+
 class Task(BaseModel):
     id: str
     type: str
@@ -21,12 +22,14 @@ class Task(BaseModel):
     hostler_comments: Optional[str] = None
     yardType: Optional[str] = None
 
+
 class Hostler(BaseModel):
     id: str
     name: str
     checker_id: str
     moves: int
     tasks: List[Task] = []
+
 
 class PollResult(BaseModel):
     workbasket_tasks: List[Task]

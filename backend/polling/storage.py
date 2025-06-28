@@ -1,6 +1,8 @@
 import aioredis
 import json
 
+from backend.polling.models import PollResult
+
 REDIS_URL = "redis://localhost"
 TASKS_KEY = "tasks"
 PUBSUB_CHANNEL = "frontend_tasks_channel"
@@ -41,3 +43,19 @@ async def get_all_tasks(redis):
     """
     tasks_data = await redis.lrange(TASKS_KEY, 0, -1)
     return [json.loads(t) for t in tasks_data]
+
+
+async def set_latest_poll_result(result: PollResult):
+    redis = await get_redis()
+    await redis.set("latest_poll_result", result.json())
+    await redis.close()
+
+
+async def get_latest_poll_result():
+    redis = await get_redis()
+    data = await redis.get("latest_poll_result")
+    await redis.close()
+    if data:
+        return PollResult.parse_raw(data)
+    else:
+        return None

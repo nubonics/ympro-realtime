@@ -2,29 +2,48 @@ import os
 import httpx
 import asyncio
 import logging
+import json
 from .models import Task, Hostler, PollResult
-from .store import poller_store
+from .storage import get_redis  # Updated import
 
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "10"))  # seconds
-BASE_URL = os.getenv("POLLER_URL", "http://localhost:8001")
+BASE_URL = os.getenv("POLLER_URL", "http://localhost:9000")
 
 logger = logging.getLogger("poller")
 logging.basicConfig(level=logging.INFO)
+
 
 async def fetch_workbasket(client) -> list[Task]:
     resp = await client.get(f"{BASE_URL}/workbasket")
     resp.raise_for_status()
     return [Task(**t) for t in resp.json()["tasks"]]
 
+
 async def fetch_hostlers_summary(client) -> list[dict]:
     resp = await client.get(f"{BASE_URL}/hostlers/summary")
     resp.raise_for_status()
     return resp.json()["hostlers"]
 
+
 async def fetch_hostler_details(client, hostler_id: str) -> list[Task]:
     resp = await client.get(f"{BASE_URL}/hostlers/{hostler_id}/details")
     resp.raise_for_status()
     return [Task(**t) for t in resp.json()["tasks"]]
+
+
+async def set_latest_poll_result(result: PollResult):
+    """
+    Store the latest poll result in Redis.
+    """
+    redis = await get_redis()
+    # Convert the PollResult (with Hostler objects) to dict first if needed
+    result_dict = {
+        "workbasket_tasks": [t.dict() for t in result.workbasket_tasks],
+        "hostlers": {hid: h.dict() for hid, h in result.hostlers.items()}
+    }
+    await redis.set("latest_poll_result", json.dumps(result_dict))
+    await redis.close()
+
 
 async def poll_forever(handle_payload):
     async with httpx.AsyncClient() as client:
@@ -57,7 +76,7 @@ async def poll_forever(handle_payload):
                 )
 
                 # 5. Store and handle
-                poller_store.set_latest(result)
+                await set_latest_poll_result(result)
                 await handle_payload(result)
                 logger.info("Polling cycle complete.")
 
