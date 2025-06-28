@@ -1,4 +1,4 @@
 fastapi
 uvicorn
-redis
+redis>=4.2
 pydantic>=2.0

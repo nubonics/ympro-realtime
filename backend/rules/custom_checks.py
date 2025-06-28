@@ -12,13 +12,13 @@ def check_boxtrucks(trailer_number: str) -> bool:
     )
 
 
-def check_preventative_maintenance(trailer_number: str) -> bool:
+def check_preventative_maintenance(yard_task_type: str):
     """
-    Returns True if 'Preventative' is in the trailer_number (case-insensitive).
+    Returns True if 'Preventative' is in the yard task type (case-insensitive).
     """
-    if not trailer_number:
-        return False
-    return "PREVENTATIVE" in trailer_number.upper()
+    if not yard_task_type:
+        return None
+    return "PREVENTATIVE" in yard_task_type.upper()
 
 
 def check_duplicate_task(task, all_tasks):

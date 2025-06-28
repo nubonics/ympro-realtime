@@ -11,11 +11,12 @@ def check_task_rules(task, all_tasks):
         return False, reason
 
     trailer_number = getattr(task, "trailer", "")
+    yard_task_type = getattr(task, "yard_type_task", "")
     if check_boxtrucks(trailer_number):
-        if getattr(task, "type", None) == "bring":
-            return False, f"Box trucks (trailer: {trailer_number}) are not allowed for bring tasks."
+        if getattr(task, "type", None) == "pull":
+            return False, f"Box trucks (trailer: {trailer_number}) are not allowed for pull tasks."
 
-    if check_preventative_maintenance(trailer_number):
+    if check_preventative_maintenance(yard_task_type=yard_task_type):
         return False, f"Trailer {trailer_number} is flagged for preventative maintenance."
 
     return True, None
@@ -26,7 +27,9 @@ def validate_and_fix_tasks(tasks):
     Deduplicate and fix tasks so there is at most one task of a given (type, door).
     For tasks with the same (type, door), keep the one with the lowest ID.
     Also makes sure trailer numbers are consistent for each door.
+    Only returns tasks that pass check_task_rules.
     """
+    # Deduplicate by (type, door)
     unique_by_type_door = {}
     for t in tasks:
         if hasattr(t, "door"):
@@ -52,5 +55,16 @@ def validate_and_fix_tasks(tasks):
             t.trailer = trailer_by_door[t.door]
 
     # Add any tasks without a door (not deduped)
+    deduped_tasks = list(unique_by_type_door.values())
     remaining = [t for t in tasks if not hasattr(t, "door")]
-    return list(unique_by_type_door.values()) + remaining
+    all_tasks = deduped_tasks + remaining
+
+    # Filter tasks by business rules
+    valid_tasks = []
+    for t in all_tasks:
+        allowed, _ = check_task_rules(t, all_tasks)
+        if allowed:
+            valid_tasks.append(t)
+        # Optionally: else, log or collect tasks that failed
+
+    return valid_tasks
