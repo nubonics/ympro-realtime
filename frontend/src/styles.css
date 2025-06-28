@@ -1,0 +1,449 @@
+body {
+  background: radial-gradient(ellipse at 55% 30%, #142024 70%, #131e28 100%);
+  font-family: 'Segoe UI', 'Roboto', Arial, sans-serif;
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  color: #e6f7fa;
+}
+
+.layout-root {
+  display: flex;
+  min-height: 100vh;
+}
+
+/* --- SIDEBAR --- */
+.sidebar {
+  background: linear-gradient(150deg, #102026 60%, #16303b 100%);
+  color: #e6f7fa;
+  min-height: 100vh;
+  width: 220px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 2px 0 32px 0 #0f434a22;
+  position: relative;
+  z-index: 10;
+  transition: width 0.23s cubic-bezier(.4,0,.2,1);
+}
+.sidebar-toggle {
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 14px;
+  cursor: pointer;
+  font-size: 22px;
+  color: #3c8ca5;
+  border-bottom: 1px solid #18353c;
+  background: rgba(0,0,0,0.09);
+}
+.sidebar-list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 17px;
+  padding: 38px 0 30px 0;
+}
+.sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  font-size: 18px;
+  padding: 12px 34px 12px 22px;
+  cursor: pointer;
+  border-radius: 14px;
+  transition: background 0.17s, color 0.14s, box-shadow 0.15s;
+  user-select: none;
+  color: #bfeefb;
+  position: relative;
+}
+.sidebar-item:hover, .sidebar-item.active {
+  background: linear-gradient(90deg, #1f463e 10%, #1b3c4c 90%);
+  color: #e6f7fa;
+  box-shadow: 0 2px 12px #2b6e6e2a;
+}
+.sidebar-label {
+  white-space: nowrap;
+  font-size: 18px;
+  letter-spacing: 0.05em;
+}
+
+.main-board {
+  flex: 1;
+  background: transparent;
+  min-height: 100vh;
+  padding: 0;
+}
+
+/* --- BOARD LAYOUT: No stacking, no scrolling, columns shrink to fit --- */
+.board {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 24px;
+  padding-left: 38px;
+  padding-right: 24px;  /* right padding matches gap */
+  padding-top: 20px;
+  z-index: 1;
+  flex-wrap: nowrap;
+}
+
+/* Workbasket and hostler columns: shrink to fit, never stack or scroll */
+.workbasket-container,
+.hostler-container {
+  flex: 1 1 0;
+  min-width: 0;           /* Allow shrinking as much as needed */
+  max-width: none;
+  margin-bottom: 28px;
+  min-width: 160px;
+  background: linear-gradient(135deg, #17252c 60%, #19363f 120%);
+  border-radius: 21px;
+  box-shadow: 0 6px 26px #16303b22, 0 0px 0 0 #16303b;
+  padding: 30px 24px 18px 38px;
+  border: 2px solid #1c313d;
+  transition: background 0.22s, box-shadow 0.22s, border-color 0.22s, transform 0.18s;
+  position: relative;
+  outline: 2px solid #16303b1d;
+  outline-offset: -5px;
+  filter: drop-shadow(0 2px 12px #16303b22);
+  animation: containerPopIn 0.7s cubic-bezier(.47,1.64,.41,.8) backwards;
+}
+@keyframes containerPopIn {
+  from { opacity: 0; transform: translateY(20px) scale(0.97);}
+  to   { opacity: 1; transform: translateY(0) scale(1);}
+}
+
+.workbasket-container {
+  background: linear-gradient(135deg, #17252c 60%, #225b5b 210%);
+  border-color: #225b5b66;
+}
+.hostler-container {
+  /* Add any hostler-specific styling if desired */
+}
+
+/* --- EMPTIES + RECYCLE BIN TOP BAR --- */
+.empties-recycle-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: stretch;
+  width: 100%;
+  margin-bottom: 32px;
+  background: linear-gradient(90deg, #1a2c34 8%, #16303b 100%);
+  border-bottom: 2.2px solid #1c313d;
+  border-radius: 0;
+  min-height: 74px;
+  box-shadow: 0 6px 28px 0 #13496122, 0 2px 0 0 #1a4f4f;
+  position: relative;
+  z-index: 2;
+  filter: drop-shadow(0 2px 18px #13496133);
+  backdrop-filter: blur(6px) saturate(1.04);
+  -webkit-backdrop-filter: blur(6px) saturate(1.04);
+}
+
+.empties-row-horizontal {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 22px;
+  width: 100%;
+  padding: 18px 0 12px 46px;
+  min-height: 74px;
+}
+
+.recycle-bin-top {
+  margin-right: 34px;
+  min-width: 160px;
+  align-self: stretch;
+  height: 100%;
+  display: flex;
+  align-items: stretch;
+}
+
+.recyclebin-container.top-compact {
+  max-width: 220px;
+  min-width: 130px;
+  height: 10%;
+  box-shadow: 0 2px 16px 0 #13496133;
+  background: linear-gradient(135deg, #1d2a3a 60%, #16303b 120%);
+  border: 1.7px solid #1c313d;
+  font-size: 1.09rem;
+  padding: 12px 28px;
+  margin-top: 0;
+  border-radius: 0 0 18px 18px;
+  color: #bfeefb;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.19s, color 0.18s, box-shadow 0.18s;
+  outline: 2px solid #1c313d22;
+  outline-offset: -4px;
+  backdrop-filter: blur(5.5px) saturate(1.08);
+  -webkit-backdrop-filter: blur(5.5px) saturate(1.08);
+  text-shadow: 0 1px 7px #13496144;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+.recyclebin-container.top-compact.recyclebin-active {
+  border-color: #256675;
+  background: linear-gradient(135deg, #225b5b 90%, #16303b 100%);
+  color: #e6f7fa;
+  box-shadow: 0 0 0 3px #25667555;
+  transition: background 0.15s, box-shadow 0.15s, border-color 0.14s;
+}
+
+/* --- EMPTIES BUTTONS --- */
+.task-card.empty {
+  background: linear-gradient(135deg, #225b5b 0%, #1d5c7b 90%);
+  border: 2.3px solid #1c313d;
+  color: #d1f1f6;
+  font-weight: 600;
+  box-shadow: 0 4px 18px 0 #1c313d55, 0 0 0 #0000 !important;
+  font-size: 1.09rem;
+  min-width: 112px;
+  transition: border 0.16s, box-shadow 0.16s, background 0.16s, color 0.14s, transform 0.16s;
+  filter: drop-shadow(0 2px 8px #1c313d26);
+  letter-spacing: 0.02em;
+  border-radius: 16px;
+  backdrop-filter: blur(2.2px);
+  animation: emptyFadeIn 0.6s cubic-bezier(.47,1.64,.41,.8) backwards;
+}
+@keyframes emptyFadeIn {
+  from { opacity: 0; transform: translateY(14px) scale(0.98);}
+  to   { opacity: 1; transform: translateY(0) scale(1);}
+}
+.task-card.empty:hover, .task-card.empty:focus {
+  border: 2.3px solid #256675;
+  color: #e6f7fa;
+  background: linear-gradient(135deg, #256675 0%, #225b5b 100%);
+  box-shadow: 0 8px 24px #25667522, 0 0px 0 #0000 !important;
+  transform: translateY(-3.5px) scale(1.05);
+  z-index: 2;
+}
+
+.task-card.empty.dragging {
+  opacity: 0.63;
+  box-shadow: 0 14px 32px #1c313d44;
+}
+
+/* --- TASK CARDS --- */
+.task-card {
+  background: radial-gradient(circle at 18% 16%, #16303b 95%, #1d5c7b 160%);
+  color: #e4eafc;
+  border: 2px solid #1c313d;
+  border-radius: 15px;
+  margin: 16px 0;
+  padding: 14px 20px;
+  font-size: 1.05em;
+  box-shadow: 0 3px 14px rgba(44,64,120,0.14);
+  transition:
+    box-shadow 0.16s,
+    border-color 0.17s,
+    background 0.18s,
+    color 0.14s,
+    transform 0.16s;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  cursor: pointer;
+  min-width: 0; /* allow shrinking in flex layout */
+  max-width: 370px;
+  filter: drop-shadow(0 2px 10px #16303b22);
+  animation: cardFadeIn 0.6s cubic-bezier(.47,1.64,.41,.8) backwards;
+  box-sizing: border-box;
+}
+@keyframes cardFadeIn {
+  from { opacity: 0; transform: translateY(14px) scale(0.98);}
+  to   { opacity: 1; transform: translateY(0) scale(1);}
+}
+.task-card:hover {
+  border-color: #256675;
+  box-shadow: 0 10px 34px #25667511;
+  color: #e6f7fa;
+  background: radial-gradient(circle at 18% 16%, #225b5b 120%, #1d5c7b 200%);
+  transform: translateY(-4px) scale(1.022);
+  z-index: 2;
+}
+.task-card:active {
+  border-color: #256675;
+  background: #18353c;
+}
+
+.taskcard-header {
+  display: flex;
+  justify-content: space-between;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.taskcard-note {
+  margin-top: 3px;
+  font-size: 0.97em;
+  color: #bfeefb;
+}
+.priority-hot {
+  color: #ff8f34;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.task-type {
+  letter-spacing: 0.01em;
+}
+
+h3 {
+  font-weight: 700;
+  font-size: 1.18rem;
+  margin-bottom: 10px;
+  letter-spacing: 0.02em;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1a4f4f;
+  border-radius: 7px;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  background: #102026;
+}
+
+/* --- SELECTION & FOCUS --- */
+*:focus {
+  outline: 2px solid #25667599;
+  outline-offset: 2.5px;
+  transition: outline 0.12s;
+}
+
+/* --- Responsive: stack on small screens --- */
+@media (max-width: 900px) {
+  .board {
+    flex-direction: column;
+    gap: 18px;
+    padding-left: 0;
+    flex-wrap: wrap;
+  }
+  .container, .hostler-container, .workbasket-container {
+    min-width: 90vw;
+    max-width: 98vw;
+    flex: 1 1 98vw;
+  }
+}
+
+/* --- SIDE ICONS TASK CARD --- */
+.task-card.side-icons-layout {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 12px;
+  min-height: 50px;
+  position: relative;
+  background: #222;
+  border: 1px solid #888;
+  border-radius: 7px;
+  box-shadow: none;
+  margin: 7px 0;
+}
+
+.side-icon {
+  width: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+}
+.side-icon.left { justify-content: flex-start; }
+.side-icon.right { justify-content: flex-end; }
+
+.task-main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+}
+
+.task-main-label {
+  font-size: 1.11em;
+  font-weight: 600;
+  color: #fff;
+  margin-bottom: 2px;
+  text-align: center;
+}
+
+.pending-badge {
+  margin-top: 2px;
+  background: #ffbc42;
+  color: #222;
+  font-size: 1em;
+  padding: 1.5px 13px 2.5px 13px;
+  border-radius: 5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  box-shadow: 0 1px 4px #2225;
+  border: 1.2px solid #fff5;
+  display: inline-block;
+}
+
+.copy-btn, .lock-btn {
+  background: none;
+  border: none;
+  color: #ffbc42;
+  cursor: pointer;
+  font-size: 1.15em;
+  padding: 0;
+  vertical-align: middle;
+  transition: color 0.14s;
+}
+.copy-btn:hover, .lock-btn:hover {
+  color: #fff381;
+}
+.copied-tooltip {
+  margin-left: 5px;
+  color: #32e132;
+  font-size: 0.95em;
+  font-weight: 600;
+}
+
+/* --- HOSTLER PULL/BRING LAYOUT --- */
+.hostler-task-list {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.hostler-hook-row {
+  display: flex;
+  flex-direction: row;
+  gap: 10px;
+  margin-bottom: 12px;
+  justify-content: center;
+}
+
+.hostler-pull-bring-row {
+  display: flex;
+  flex-direction: row;
+  gap: 24px;
+  justify-content: stretch;
+  width: 100%;
+}
+
+.hostler-pull-col, .hostler-bring-col {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.hostler-type-label {
+  font-size: 1em;
+  font-weight: 700;
+  color: #bfeefb;
+  margin-bottom: 7px;
+  letter-spacing: 0.07em;
+  text-align: center;
+  opacity: 0.8;
+  padding-bottom: 2px;
+}
