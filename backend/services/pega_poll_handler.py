@@ -1,6 +1,6 @@
 from backend.rules.validation import check_task_rules
-from backend.services.storage import get_redis, store_task, remove_task, emit_to_frontend
-from backend.services.external_api import delete_task_external
+from backend.polling.storage import get_redis, store_task, remove_task, emit_to_frontend
+from backend.polling.external_api import delete_task_external
 
 async def handle_poll_payload(payload):
     """

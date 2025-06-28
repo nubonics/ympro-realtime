@@ -1,6 +1,7 @@
 import httpx
 
 # Base URL for the external task API (update as needed)
+EXTERNAL_BASE_URL = "http://localhost:8000/api"
 
 
 async def create_task_external(task_data):
