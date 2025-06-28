@@ -3,6 +3,7 @@
   <component name="ProjectModuleManager">
     <modules>
       <module fileurl="file://$PROJECT_DIR$/.idea/ympro-realtime.iml" filepath="$PROJECT_DIR$/.idea/ympro-realtime.iml" />
+      <module fileurl="file://$PROJECT_DIR$/../ympro-realtime-fakepoller/ympro-realtime-fakepoller/.idea/ympro-realtime-fakepoller.iml" filepath="$PROJECT_DIR$/../ympro-realtime-fakepoller/ympro-realtime-fakepoller/.idea/ympro-realtime-fakepoller.iml" />
     </modules>
   </component>
 </project>

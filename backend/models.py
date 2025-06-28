@@ -1,5 +1,6 @@
 from typing import Annotated, Optional, Union, Literal
-from pydantic import BaseModel, Field, field_validator
+
+from pydantic import BaseModel, Field
 
 
 class PullTask(BaseModel):
