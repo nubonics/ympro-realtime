@@ -13,25 +13,20 @@ def check_boxtrucks(trailer_number: str) -> bool:
 
 
 def check_preventative_maintenance(yard_task_type: str):
-    """
-    Returns True if 'Preventative' is in the yard task type (case-insensitive).
-    """
     if not yard_task_type:
         return None
-    return "PREVENTATIVE" in yard_task_type.upper()
+    s = yard_task_type.upper()
+    return "PREVENTIVE" in s or "PREVENTATIVE" in s
 
 
 def check_duplicate_task(task, all_tasks):
-    """
-    Checks if there is already a task of the same type and door (but different id).
-    Returns (allowed: bool, reason: Optional[str])
-    """
-    if hasattr(task, "door") and hasattr(task, "type"):
-        for t in all_tasks:
-            if (
-                    hasattr(t, "door") and t.door == task.door and
-                    hasattr(t, "type") and t.type == task.type and
-                    t.id != task.id
-            ):
-                return False, f"Duplicate {task.type} task for door {task.door} is not allowed."
-    return True, None
+    same = [
+        t for t in all_tasks
+        if t.yard_task_type == task.yard_task_type and t.door == task.door
+    ]
+    if len(same) <= 1:
+        return True, None
+    oldest = min(same, key=lambda x: x.created_at)
+    if task.id == oldest.id:
+        return True, None
+    return False, f"Duplicate {task.yard_task_type} task for door {task.door} is not allowed (only the oldest is kept)."
