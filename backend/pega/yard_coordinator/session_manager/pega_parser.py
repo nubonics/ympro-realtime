@@ -8,6 +8,7 @@ from dateparser import parse as date_parse
 from lxml import html
 
 from backend.modules.colored_logger import setup_logger
+from backend.rules.custom_checks import check_preventative_maintenance
 
 logger = setup_logger(__name__)
 
@@ -166,7 +167,7 @@ def extract_hostler_view_details(html_content):
             trailer_no_elements = row.xpath(".//td[@data-attribute-name='Trailer No']")
             trailer_number = trailer_no_elements[0].text_content().strip() if trailer_no_elements else ""
             door_no_elements = row.xpath(".//td[@data-attribute-name='Door No']")
-            door_number = door_no_elements[0].text_content().strip() if door_no_elements else ""
+            door = door_no_elements[0].text_content().strip() if door_no_elements else ""
             status_elements = row.xpath(".//td[@data-attribute-name='Status']")
             status = status_elements[0].text_content().strip() if status_elements else ""
             if status == "Open-InProgress":
@@ -174,7 +175,7 @@ def extract_hostler_view_details(html_content):
             task = {
                 "case_id": case_id,
                 "trailer_number": trailer_number,
-                "door_number": door_number,
+                "door": door,
                 "assigned_to": assigned_to,
                 "status": status,
                 "locked": False,
@@ -185,7 +186,7 @@ def extract_hostler_view_details(html_content):
                 "type_of_trailer": None,
                 "drop_location": None,
                 "hostler_comments": None,
-                "door": door_number,
+                "door": door,
                 "trailer": trailer_number,
                 "id": case_id,
                 "yard_task_type": yard_task_type,
@@ -208,12 +209,15 @@ def extract_workbasket_tasks(html_content: str, assigned_to: str = "workbasket")
         case_id_list = cells[0].xpath(".//a/text()")
         case_id = case_id_list[0].strip() if case_id_list else cells[0].text_content().strip()
         yard_task_type = cells[1].text_content().strip()
+        # inside your function:
         if 'pull' in yard_task_type.lower():
             yard_task_type = 'pull'
         elif 'bring' in yard_task_type.lower():
             yard_task_type = 'bring'
         elif 'hook' in yard_task_type.lower():
             yard_task_type = 'hook'
+        elif 'prevent' in yard_task_type.lower() or 'maintenance' in yard_task_type.lower():
+            yard_task_type = 'preventive_maintenance'
         else:
             raise Exception(
                 f'Unknown yard task type: {yard_task_type} for case {case_id}\nextract_workbasket_tasks')
@@ -227,7 +231,7 @@ def extract_workbasket_tasks(html_content: str, assigned_to: str = "workbasket")
         task = {
             "case_id": case_id,
             "trailer_number": trailer_no,
-            "door_number": door_no,
+            "door": door_no,
             "assigned_to": assigned_to,
             "status": status,
             "locked": False,

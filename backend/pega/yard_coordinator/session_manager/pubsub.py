@@ -4,7 +4,7 @@ import os
 
 from backend.pega.yard_coordinator.utils import DateTimeEncoder
 
-REDIS_PUBSUB_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+REDIS_PUBSUB_URL = os.getenv("REDIS_URL", "redis://localhost:6379/1")
 
 
 class PubSubManager:

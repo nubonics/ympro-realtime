@@ -7,7 +7,7 @@ class PullTask(BaseModel):
     yard_task_type: Literal["pull"] = "pull"
     trailer: str  # Required
     assigned_to: Optional[str] = None  # Required, but defaults to None
-    door: Optional[str] = None
+    door: int
     zoneType: Optional[str] = None
     zoneLocation: Optional[str] = None
     note: Optional[str] = None
@@ -26,7 +26,7 @@ class BringTask(BaseModel):
     yard_task_type: Literal["bring"] = "bring"
     trailer: str  # Required
     assigned_to: Optional[str] = None  # Required, but defaults to None
-    door: Optional[str] = None
+    door: int
     zoneType: Optional[str] = None
     zoneLocation: Optional[str] = None
     note: Optional[str] = None
@@ -46,13 +46,13 @@ class HookTask(BaseModel):
     trailer: str  # Required
     assigned_to: Optional[str] = None  # Required, but defaults to None
     leadTrailer: Optional[str] = None
-    leadDoor: Optional[str] = None
+    leadDoor: Optional[int] = None
     middleTrailer: Optional[str] = None
-    middleDoor: Optional[str] = None
-    dolly1: Optional[str] = None
+    middleDoor: Optional[int] = None
+    dolly1: Optional[int] = None
     tailTrailer: Optional[str] = None
-    tailDoor: Optional[str] = None
-    dolly2: Optional[str] = None
+    tailDoor: Optional[int] = None
+    dolly2: Optional[int] = None
     note: Optional[str] = None
     priority: str = "normal"
     # hostler: Optional[str] = None
@@ -83,7 +83,7 @@ class CreateTaskRequest(BaseModel):
     status: Optional[str] = "PENDING"
     locked: Optional[bool] = False
     general_note: Optional[str] = ""
-    priority: Optional[str] = "Normal"
+    priority: Optional[str] = "normal"
 
 
 class TransferTaskRequest(BaseModel):

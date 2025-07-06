@@ -3,7 +3,7 @@ import asyncio
 import json
 import os
 
-REDIS_PUBSUB_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+REDIS_PUBSUB_URL = os.getenv("REDIS_URL", "redis://localhost:6379/1")
 
 
 async def main():

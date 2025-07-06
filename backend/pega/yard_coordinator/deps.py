@@ -6,7 +6,9 @@ from redis.asyncio import Redis
 
 from backend.modules.colored_logger import setup_logger
 from backend.pega.yard_coordinator.session_manager.manager import PegaTaskSessionManager
-from backend.modules.storage import set_latest_poll_result
+from backend.modules.storage import set_latest_poll_result, cleanup_expired_tasks
+from backend.rules.validation import validate_and_store_tasks
+from enum import Enum, auto
 
 logger = setup_logger()
 load_dotenv()
@@ -19,6 +21,13 @@ class PollingError(Exception):
     pass
 
 
+class PollerState(Enum):
+    STOPPED = auto()
+    RUNNING = auto()
+    STOPPING = auto()
+    ERROR = auto()
+
+
 class PegaTaskPoller:
     def __init__(self, pega_task_session_manager: PegaTaskSessionManager, redis: Redis, handle_payload=None):
         self.pega_task_session_manager = pega_task_session_manager
@@ -27,8 +36,24 @@ class PegaTaskPoller:
         self.polling_task = None
         self.stop_event = asyncio.Event()
         self.handle_payload = handle_payload
+        self.state = PollerState.STOPPED
+        self._last_error = None
+
+    @property
+    def is_running(self):
+        return self.state == PollerState.RUNNING
+
+    @property
+    def has_error(self):
+        return self.state == PollerState.ERROR
+
+    @property
+    def last_error(self):
+        return self._last_error
 
     async def poll_pega(self):
+        self.state = PollerState.RUNNING
+        self._last_error = None
         try:
             while not self.stop_event.is_set():
                 logger.debug("Starting poll cycle via PegaTaskPoller...")
@@ -38,24 +63,36 @@ class PegaTaskPoller:
                     logger.info("Session older than 11 hours, performing re-login...")
                     await self.pega_task_session_manager.login()
 
-                # 2. Fetch all tasks from Pega (this will apply all validation & business rules)
+                # 2. Fetch all tasks from Pega
                 try:
                     await self.pega_task_session_manager.fetch_all_pega_tasks()
                 except Exception as e:
                     logger.error(f"Error during fetching tasks from Pega: {e}")
 
-                # 3. Get only the valid tasks from the task store
-                raw_tasks = await self.pega_task_session_manager.task_store.get_all_tasks()
-                # These should already be valid thanks to centralized validation
-                # You can optionally convert to your Task model here if needed
+                # 3. Get all parsed tasks from the task store
+                all_task_dicts = await self.pega_task_session_manager.task_store.get_all_tasks()
 
-                # 4. Publish to Redis or notify handlers
-                await set_latest_poll_result([t.model_dump() if hasattr(t, "model_dump") else t for t in raw_tasks],
-                                             self.redis)
+                # 4. Validate and store tasks (returns only valid tasks, deletes unwanted)
+                valid_tasks = await validate_and_store_tasks(
+                    all_task_dicts, self.pega_task_session_manager.task_store,
+                    session_manager=self.pega_task_session_manager
+                )
+                unwanted_count = len(all_task_dicts) - len(valid_tasks)
+
+                # 5. Store only valid tasks in Redis
+                await set_latest_poll_result(
+                    [t.model_dump() if hasattr(t, "model_dump") else t for t in valid_tasks],
+                    self.redis
+                )
                 if self.handle_payload is not None:
-                    await self.handle_payload(raw_tasks, self.redis)
+                    await self.handle_payload(valid_tasks, self.redis)
 
-                logger.info(f"Poll cycle: {len(raw_tasks)} valid tasks, poll interval={self.polling_interval}s")
+                # 6. Log counts
+                logger.info(
+                    f"Poll cycle: {len(valid_tasks)} valid tasks, {unwanted_count} unwanted (deleted) tasks, poll interval={self.polling_interval}s"
+                )
+
+                await cleanup_expired_tasks(self.redis)
 
                 # Wait for next cycle
                 try:
@@ -64,29 +101,55 @@ class PegaTaskPoller:
                     pass  # Continue polling
 
         except asyncio.CancelledError:
+            self.state = PollerState.STOPPED
             logger.info("Polling task canceled.")
         except Exception as e:
+            self._last_error = e
+            self.state = PollerState.ERROR
             logger.error(f"Unexpected error during polling: {e}")
             raise PollingError("Polling encountered an issue.") from e
+        finally:
+            if self.state != PollerState.ERROR:
+                self.state = PollerState.STOPPED
 
     async def start_polling(self):
+        if self.is_running:
+            logger.warning("Polling task is already running.")
+            return
+        if self.polling_task and not self.polling_task.done():
+            logger.warning("Polling task is still running in background.")
+            return
+        if self.has_error:
+            logger.warning(f"Polling previously stopped due to error: {self.last_error}. Resetting state and restarting.")
+        self.stop_event.clear()  # Reset the event before starting
+        self.state = PollerState.STOPPED  # Reset state before starting
         await asyncio.sleep(5)  # Optional: let websockets connect etc
         if self.pega_task_session_manager.should_relogin():
             logger.info("Session not logged in or older than 11 hours. Logging in now...")
             await self.pega_task_session_manager.login()
-        if self.polling_task:
-            logger.warning("Polling task is already running.")
-            return
         self.polling_task = asyncio.create_task(self.poll_pega())
         logger.info("Polling task started.")
 
     def stop_polling(self):
+        if not self.is_running:
+            logger.warning("Polling is not running.")
+            return
+        self.state = PollerState.STOPPING
+        self.stop_event.set()
         if self.polling_task:
-            self.stop_event.set()
             self.polling_task.cancel()
-            logger.info("Polling task stopped.")
-        else:
-            logger.warning("No polling task is running.")
+        logger.info("Polling task stop requested.")
+
+    def get_state(self):
+        return self.state.name
+
+    def get_status(self):
+        return {
+            "state": self.state.name,
+            "is_running": self.is_running,
+            "has_error": self.has_error,
+            "last_error": str(self.last_error) if self.has_error else None,
+        }
 
 
 def get_pega_poller(app):

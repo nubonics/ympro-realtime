@@ -1,4 +1,7 @@
+from redis.asyncio import Redis
+
 from backend.modules.colored_logger import setup_logger
+from backend.modules.storage import get_checker_id_by_name
 from backend.pega.yard_coordinator.transfer.transfer_from_hostler_to_workbasket import TransferFromHostlerToWorkbasket
 from backend.pega.yard_coordinator.transfer.transfer_from_workbasket_to_hostler import TransferFromWorkbasketToHostler
 
@@ -16,6 +19,7 @@ class TransferTask:
             self,
             task_id,
             assigned_to,
+            session_manager,
             **kwargs
     ):
         """
@@ -23,70 +27,19 @@ class TransferTask:
         :param assigned_to: The checker/user id (e.g. 222982) or None for workbasket transfer
         :param kwargs: additional keys needed for advanced flows (row_page, base_ref, etc)
         """
-        self.task_id = task_id
-        self.assigned_to = assigned_to
         self.extra = kwargs
 
-        # Session context (set later via set_pega_data)
-        self.base_url = None
-        self.pzHarnessID = None
-        self.pzTransactionId = None
-        self.async_client = None
-        self.details_url = None
+        self.task_id = task_id
+        self.assigned_to = assigned_to
+        self.session_manager = session_manager
+        self.base_url = self.session_manager.base_url
+        self.pzHarnessID = self.session_manager.pzHarnessID
+        self.pzTransactionId = self.session_manager.pzTransactionId
+        self.async_client = self.session_manager.async_client
 
-    def set_pega_data(
-            self,
-            base_url=None,
-            pzHarnessID=None,
-            pzTransactionId=None,
-            async_client=None,
-            details_url=None
-    ):
-        self.base_url = base_url
-        self.pzHarnessID = pzHarnessID
-        self.pzTransactionId = pzTransactionId
-        self.async_client = async_client
-        self.details_url = details_url
-
-    async def transfer(self):
-        if self.assigned_to:
-            # Workbasket → Hostler
-            row_page = self.extra.get("row_page")
-            base_ref = self.extra.get("base_ref")
-            if row_page and base_ref:
-                # Advanced workflow
-                transfer = TransferFromHostlerToWorkbasket(
-                    task_id=self.task_id,
-                    checker_id=self.assigned_to,
-                    row_page=row_page,
-                    base_ref=base_ref
-                )
-                transfer.set_pega_data(
-                    base_url=self.base_url,
-                    pzHarnessID=self.pzHarnessID,
-                    pzTransactionId=self.pzTransactionId,
-                    async_client=self.async_client,
-                )
-                return await transfer.transfer(
-                    fetch_worklist_pd_key=self.extra.get("fetch_worklist_pd_key"),
-                    team_members_pd_key=self.extra.get("team_members_pd_key"),
-                    section_id_list=self.extra.get("section_id_list"),
-                    pzuiactionzzz=self.extra.get("pzuiactionzzz"),
-                )
-            else:
-                # Simple GET-based transfer
-                transfer = TransferFromWorkbasketToHostler(
-                    task_id=self.task_id,
-                    checker_id=self.assigned_to
-                )
-                transfer.set_pega_data(
-                    base_url=self.base_url,
-                    pzHarnessID=self.pzHarnessID,
-                    async_client=self.async_client,
-                    details_url=self.details_url,
-                )
-                return await transfer.transfer()
-        else:
+    async def transfer(self, redis: Redis):
+        assigned_to = (self.assigned_to or "").strip().lower()
+        if assigned_to in ("", "workbasket", None):
             # Hostler → Workbasket
             row_page = self.extra.get("row_page")
             base_ref = self.extra.get("base_ref")
@@ -95,18 +48,31 @@ class TransferTask:
             transfer = TransferFromHostlerToWorkbasket(
                 task_id=self.task_id,
                 checker_id=None,
-                row_page=row_page,
-                base_ref=base_ref
-            )
-            transfer.set_pega_data(
-                base_url=self.base_url,
-                pzHarnessID=self.pzHarnessID,
-                pzTransactionId=self.pzTransactionId,
-                async_client=self.async_client,
-            )
-            return await transfer.transfer(
+                session_manager=self.session_manager,
                 fetch_worklist_pd_key=self.extra.get("fetch_worklist_pd_key"),
                 team_members_pd_key=self.extra.get("team_members_pd_key"),
                 section_id_list=self.extra.get("section_id_list"),
                 pzuiactionzzz=self.extra.get("pzuiactionzzz"),
+                row_page=row_page,
+                base_ref=base_ref,
+                context_page=self.extra.get("context_page"),
+                strIndexInList=self.extra.get("strIndexInList"),
+                activity_params=self.extra.get("activity_params"),
             )
+            return await transfer.transfer()
+        else:
+            # Workbasket → Hostler
+            checker_id = self.assigned_to
+            if not checker_id.isdigit():
+                checker_id_lookup = await get_checker_id_by_name(redis, checker_id.lower())
+                if not checker_id_lookup:
+                    raise ValueError(f"Could not resolve checker id for hostler name '{checker_id}'")
+                checker_id = checker_id_lookup
+
+            # Regardless of row_page/base_ref, use TransferFromWorkbasketToHostler!
+            transfer = TransferFromWorkbasketToHostler(
+                task_id=self.task_id,
+                checker_id=checker_id,
+                session_manager=self.session_manager,
+            )
+            return await transfer.transfer()

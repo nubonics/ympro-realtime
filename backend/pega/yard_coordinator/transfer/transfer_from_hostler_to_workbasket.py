@@ -1,42 +1,101 @@
 from backend.modules.colored_logger import setup_logger
+import httpx
+from backend.pega.yard_coordinator.session_manager.debug import save_html_to_file
+
 logger = setup_logger(__name__)
 
 
 class TransferFromHostlerToWorkbasket:
     """
     Transfers a task from a hostler (checker) to the workbasket using the Pega API's full multi-step workflow.
-    Requires:
-      - task_id: e.g. "T-34246622"
-      - checker_id: hostler user id, e.g. "222982"
-      - row_page: e.g. "D_TeamMembersByWorkGroup_pa574308029294101pz.pxResults(4)"
-      - base_ref: e.g. "D_TeamMembersByWorkGroup_pa574308029294101pz"
-      - pzHarnessID, pzTransactionId, async_client, base_url (injected via set_pega_data)
+    All session/context must be injected via a session_manager, which provides async_client, tokens, cookies, etc.
     """
 
-    def __init__(self, task_id, checker_id, row_page, base_ref):
-        self.task_id = task_id
-        self.checker_id = checker_id
-        self.row_page = row_page  # e.g. "D_TeamMembersByWorkGroup_pa574308029294101pz.pxResults(4)"
-        self.base_ref = base_ref  # e.g. "D_TeamMembersByWorkGroup_pa574308029294101pz"
-        self.pzHarnessID = None
-        self.pzTransactionId = None
-        self.async_client = None
-        self.base_url = None
+    def __init__(self, task_id, checker_id, session_manager, **kwargs):
+        self.task_id = task_id  # e.g. "T-34246622"
+        self.checker_id = checker_id  # e.g. "222982"
+        self.session = session_manager
+        self.async_client = self.session.async_client
+        self.base_url = self.session.base_url
+        self.pzHarnessID = self.session.pzHarnessID
+        self.sectionIDList = getattr(self.session, "sectionIDList", None)
+        self.fingerprint_token = self.session.fingerprint_token
+        self.csrf_token = self.session.csrf_token
+        self.pzuiactionzzz = getattr(self.session, "pzuiactionzzz", "")
+        self.fetch_worklist_pd_key = getattr(self.session, "fetch_worklist_pd_key", "")
+        self.team_members_pd_key = getattr(self.session, "team_members_pd_key", "")
+        self.activity_params = getattr(self.session, "activity_params", "")
+        self.row_page = kwargs.get("row_page") or getattr(self.session, "row_page", "")
+        self.context_page = kwargs.get("context_page") or getattr(self.session, "context_page", "")
+        self.strIndexInList = kwargs.get("strIndexInList") or getattr(self.session, "strIndexInList", "")
+        self.AJAXTrackID = getattr(self.session, "AJAXTrackID", 16)
+        self.pzTransactionId = getattr(self.session, "pzTransactionId", "")
+        self.debug_html = getattr(self.session, "debug_html", False)
 
-    def set_pega_data(self, base_url, pzHarnessID, pzTransactionId, async_client):
-        self.base_url = base_url.rstrip('/')
-        self.pzHarnessID = pzHarnessID
-        self.pzTransactionId = pzTransactionId
-        self.async_client = async_client
+        self.default_headers = {
+            "Accept": "*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "X-Requested-With": "XMLHttpRequest",
+            "Origin": "https://ymg.estes-express.com",
+            "pzBFP": self.fingerprint_token,
+            "pzCTkn": self.csrf_token,
+        }
 
-    async def step1_grid_action(self):
-        """
-        Triggers the grid action to select the appropriate hostler's row.
-        """
+        logger.debug(f"TransferFromHostlerToWorkbasket initialized with:"
+                     f"\n  task_id: {self.task_id}"
+                     f"\n  checker_id: {self.checker_id}"
+                     f"\n  session: {self.session!r}"
+                     f"\n  async_client: {self.async_client!r}"
+                     f"\n  base_url: {self.base_url!r}"
+                     f"\n  pzHarnessID: {self.pzHarnessID!r}"
+                     f"\n  sectionIDList: {self.sectionIDList!r}"
+                     f"\n  fingerprint_token: {self.fingerprint_token!r}"
+                     f"\n  csrf_token: {self.csrf_token!r}"
+                     f"\n  pzuiactionzzz: {self.pzuiactionzzz!r}"
+                     f"\n  fetch_worklist_pd_key: {self.fetch_worklist_pd_key!r}"
+                     f"\n  team_members_pd_key: {self.team_members_pd_key!r}"
+                     f"\n  activity_params: {self.activity_params!r}"
+                     f"\n  row_page: {self.row_page!r}"
+                     f"\n  context_page: {self.context_page!r}"
+                     f"\n  strIndexInList: {self.strIndexInList!r}"
+                     f"\n  AJAXTrackID: {self.AJAXTrackID!r}"
+                     f"\n  pzTransactionId: {self.pzTransactionId!r}"
+                     f"\n  debug_html: {self.debug_html!r}")
+
+    async def _post_with_redirect(self, url, data, html_file_num, label):
+        res = await self.async_client.post(url, data=data, headers=self.default_headers)
+        save_html_to_file(res.text, html_file_num, enabled=self.debug_html)
+        logger.debug(f"{label} POST status {res.status_code}")
+        if res.status_code == 303 and "location" in res.headers:
+            follow_url = res.headers["location"]
+            if not follow_url.startswith("http"):
+                follow_url = str(httpx.URL(url).join(follow_url))
+            follow = await self.async_client.get(follow_url, headers=self.default_headers)
+            save_html_to_file(follow.text, html_file_num + 1, enabled=self.debug_html)
+            logger.debug(f"{label} POST 303-follow status {follow.status_code}")
+            return follow, html_file_num + 2
+        return res, html_file_num + 1
+
+    async def _get_with_redirect(self, url, html_file_num, label):
+        res = await self.async_client.get(url, headers=self.default_headers)
+        save_html_to_file(res.text, html_file_num, enabled=self.debug_html)
+        logger.debug(f"{label} GET status {res.status_code}")
+        if res.status_code == 303 and "location" in res.headers:
+            follow_url = res.headers["location"]
+            if not follow_url.startswith("http"):
+                follow_url = str(httpx.URL(url).join(follow_url))
+            follow = await self.async_client.get(follow_url, headers=self.default_headers)
+            save_html_to_file(follow.text, html_file_num + 1, enabled=self.debug_html)
+            logger.debug(f"{label} GET 303-follow status {follow.status_code}")
+            return follow, html_file_num + 2
+        return res, html_file_num + 1
+
+    async def step1_grid_action(self, html_file_num):
         url = (
-            f"{self.base_url}/!STANDARD"
-            f"?pzTransactionId={self.pzTransactionId}"
-            f"&pzFromFrame=&pzPrimaryPageName=pyPortalHarness&AJAXTrackID=6"
+            f"{self.base_url}?pzTransactionId={self.pzTransactionId}"
+            f"&pzFromFrame=&pzPrimaryPageName=pyPortalHarness&AJAXTrackID={self.AJAXTrackID}"
             f"&eventSrcSection=Data-Portal.TeamMembersGrid"
         )
         location = (
@@ -67,70 +126,10 @@ class TransferFromHostlerToWorkbasket:
         )
         payload = (
             "pyActivity=pzRunActionWrapper"
-            "&$OCompositeGadget="
-            "&$OControlMenu="
-            "&$ODesktopWrapperInclude="
-            "&$ODeterminePortalTop="
-            "&$ODynamicContainerFrameLess="
-            "&$ODynamicLayout="
-            "&$ODynamicLayoutCell="
-            "&$OEvalDOMScripts_Include="
-            "&$OForm="
-            "&$OGapIdentifier="
-            "&$OGridInc="
-            "&$OHarness="
-            "&$OHarnessStaticJSEnd="
-            "&$OHarnessStaticJSStart="
-            "&$OHarnessStaticScriptsClientValidation="
-            "&$OHarnessStaticScriptsExprCal="
-            "&$OLaunchFlow="
-            "&$OMenuBar="
-            "&$OMenuBarOld="
-            "&$OMobileAppNotify="
-            "&$OOperatorPresenceStatusScripts="
-            "&$OPMCPortalStaticScripts="
-            "&$ORepeatingDynamicLayout="
-            "&$OSessionUser="
-            "&$OSurveyStaticScripts="
-            "&$OWorkformStyles="
-            "&$Ocosmoslocale="
-            "&$OmenubarInclude="
-            "&$OpxButton="
-            "&$OpxDisplayText="
-            "&$OpxDropdown="
-            "&$OpxDynamicContainer="
-            "&$OpxHarnessContent="
-            "&$OpxHeaderCell="
-            "&$OpxHidden="
-            "&$OpxIcon="
-            "&$OpxLayoutContainer="
-            "&$OpxLayoutHeader="
-            "&$OpxLink="
-            "&$OpxMenu="
-            "&$OpxNonTemplate="
-            "&$OpxSection="
-            "&$OpxTextInput="
-            "&$OpxVisible="
-            "&$OpxWorkArea="
-            "&$OpxWorkAreaContent="
-            "&$OpyDirtyCheckConfirm="
-            "&$OpyWorkFormStandardEnd="
-            "&$OpyWorkFormStandardStart="
-            "&$Opycosmoscustomstyles="
-            "&$OpzAppLauncher="
-            "&$OpzDecimalInclude="
-            "&$OpzFrameLessDCScripts="
-            "&$OpzHarnessInlineScriptsEnd="
-            "&$OpzHarnessInlineScriptsStart="
-            "&$OpzPegaCompositeGadgetScripts="
-            "&$OpzRuntimeToolsBar="
-            "&$Opzpega_ui_harnesscontext="
-            "&$Ordlincludes="
-            "&$OxmlDocumentInclude="
-            "&ThreadName="
+            "&$PDeclare_pyDisplay$ppyDCDisplayState$ppyActiveDocumentType=WORK"
             f"&rowPage={self.row_page}"
             f"&Location={location}"
-            f"&PagesToCopy={self.base_ref}"
+            f"&PagesToCopy={self.row_page}"
             f"&pzHarnessID={self.pzHarnessID}"
             "&UITemplatingStatus=N"
             "&inStandardsMode=true"
@@ -139,89 +138,20 @@ class TransferFromHostlerToWorkbasket:
             "&skipReturnResponse=true"
             "&pySubAction=runAct"
         )
-        response = await self.async_client.post(url, data=payload)
-        logger.debug(f"Step 1 (grid action) status {response.status_code}")
-        assert response.status_code == 200
-        return response
+        return await self._post_with_redirect(url, payload, html_file_num, "Step 1 (grid action)")
 
-    async def step2_select_assignment(self, fetch_worklist_pd_key):
-        """
-        Selects the assignment in the hostler's list.
-        """
+    async def step2_select_assignment(self, html_file_num):
         url = (
-            f"{self.base_url}/!STANDARD"
-            f"?pzTransactionId={self.pzTransactionId}"
-            f"&pzFromFrame=&pzPrimaryPageName=pyPortalHarness&AJAXTrackID=6"
+            f"{self.base_url}?pzTransactionId={self.pzTransactionId}"
+            f"&pzFromFrame=&pzPrimaryPageName=pyPortalHarness&AJAXTrackID={self.AJAXTrackID}"
             "&eventSrcSection=Data-Admin-Operator-ID.WorkListGridsMain"
         )
         payload = (
-            f"${fetch_worklist_pd_key}$ppxResults$l1$ppySelected=true"
-            "&$OCompositeGadget="
-            "&$OControlMenu="
-            "&$ODesktopWrapperInclude="
-            "&$ODeterminePortalTop="
-            "&$ODynamicContainerFrameLess="
-            "&$ODynamicLayout="
-            "&$ODynamicLayoutCell="
-            "&$OEvalDOMScripts_Include="
-            "&$OForm="
-            "&$OGapIdentifier="
-            "&$OGridInc="
-            "&$OHarness="
-            "&$OHarnessStaticJSEnd="
-            "&$OHarnessStaticJSStart="
-            "&$OHarnessStaticScriptsClientValidation="
-            "&$OHarnessStaticScriptsExprCal="
-            "&$OLaunchFlow="
-            "&$OMenuBar="
-            "&$OMenuBarOld="
-            "&$OMobileAppNotify="
-            "&$OOperatorPresenceStatusScripts="
-            "&$OPMCPortalStaticScripts="
-            "&$ORepeatingDynamicLayout="
-            "&$OSessionUser="
-            "&$OSurveyStaticScripts="
-            "&$OWorkformStyles="
-            "&$Ocosmoslocale="
-            "&$OmenubarInclude="
-            "&$OpxButton="
-            "&$OpxDisplayText="
-            "&$OpxDropdown="
-            "&$OpxDynamicContainer="
-            "&$OpxHarnessContent="
-            "&$OpxHeaderCell="
-            "&$OpxHidden="
-            "&$OpxIcon="
-            "&$OpxLayoutContainer="
-            "&$OpxLayoutHeader="
-            "&$OpxLink="
-            "&$OpxMenu="
-            "&$OpxNonTemplate="
-            "&$OpxSection="
-            "&$OpxTextInput="
-            "&$OpxVisible="
-            "&$OpxWorkArea="
-            "&$OpxWorkAreaContent="
-            "&$OpyDirtyCheckConfirm="
-            "&$OpyWorkFormStandardEnd="
-            "&$OpyWorkFormStandardStart="
-            "&$Opycosmoscustomstyles="
-            "&$OpzAppLauncher="
-            "&$OpzDecimalInclude="
-            "&$OpzFrameLessDCScripts="
-            "&$OpzHarnessInlineScriptsEnd="
-            "&$OpzHarnessInlineScriptsStart="
-            "&$OpzPegaCompositeGadgetScripts="
-            "&$OpzRuntimeToolsBar="
-            "&$Opzpega_ui_harnesscontext="
-            "&$Ordlincludes="
-            "&$OxmlDocumentInclude="
-            "&$OCheckbox="
-            "&pzuiactionzzz="
-            "&pyPropertyTarget=%24PD_FetchWorkListAssignments_pa579692650274020pz%24ppxResults%24l1%24ppySelected"
-            "&updateDOM=true"
+            f"${self.fetch_worklist_pd_key}$ppxResults$l1$ppySelected=true"
+            "&$PDeclare_pyDisplay$ppyDCDisplayState$ppyActiveDocumentType=WORK"
+            f"&pzuiactionzzz={self.pzuiactionzzz}"
             f"&BaseReference={self.row_page}"
-            "&ContextPage="
+            f"&ContextPage={self.context_page}"
             "&pzKeepPageMessages=true"
             "&pega_RLindex=1"
             "&PVClientVal=true"
@@ -230,97 +160,25 @@ class TransferFromHostlerToWorkbasket:
             f"&pzHarnessID={self.pzHarnessID}"
             "&eventSrcSection=Data-Admin-Operator-ID.WorkListGridsMain"
         )
-        response = await self.async_client.post(url, data=payload)
-        logger.debug(f"Step 2 (select assignment) status {response.status_code}")
-        assert response.status_code == 200
-        return response
+        return await self._post_with_redirect(url, payload, html_file_num, "Step 2 (select assignment)")
 
-    async def step3_reload_worklist_grid(self, section_id_list, fetch_worklist_pd_key):
-        """
-        Reloads the grid for the selected hostler assignment.
-        """
+    async def step3_reload_worklist_grid(self, html_file_num):
         url = (
-            f"{self.base_url}/!STANDARD"
-            f"?pzTransactionId={self.pzTransactionId}"
-            f"&pzFromFrame=&pzPrimaryPageName=pyPortalHarness&AJAXTrackID=6"
+            f"{self.base_url}?pzTransactionId={self.pzTransactionId}"
+            f"&pzFromFrame=&pzPrimaryPageName=pyPortalHarness&AJAXTrackID={self.AJAXTrackID}"
             "&eventSrcSection=Data-Admin-Operator-ID.WorkListGridsMain"
         )
         payload = (
             "pyActivity=ReloadSection"
             "&D_FetchWorkListAssignmentsPpxResults1colWidthGBL="
             "&D_FetchWorkListAssignmentsPpxResults1colWidthGBR="
-            f"&SectionIDList={section_id_list}"
-            f"&${fetch_worklist_pd_key}$ppxResults$l1$ppySelected=true"
-            "&strIndexInList=%5B%7B%22pyPropRef%22%3A%22D_FetchWorkListAssignments_pa579692650274020pz.pxResults(1)%22%7D%5D"
+            f"&SectionIDList={self.sectionIDList}"
+            f"&${self.fetch_worklist_pd_key}$ppxResults$l1$ppySelected=true"
+            f"&strIndexInList={self.strIndexInList}"
             "&PreActivitiesList="
             "&sectionParam="
-            "&ActivityParams=PageListProperty%3DD_FetchWorkListAssignments_pa579692650274020pz.pxResults%26refreshLayout%3Dfalse%26EditRow%3Dfalse%26gridAction%3DREFRESHROWS%26KeepGridMessages%3Dfalse"
-            "&$OCompositeGadget="
-            "&$OControlMenu="
-            "&$ODesktopWrapperInclude="
-            "&$ODeterminePortalTop="
-            "&$ODynamicContainerFrameLess="
-            "&$ODynamicLayout="
-            "&$ODynamicLayoutCell="
-            "&$OEvalDOMScripts_Include="
-            "&$OForm="
-            "&$OGapIdentifier="
-            "&$OGridInc="
-            "&$OHarness="
-            "&$OHarnessStaticJSEnd="
-            "&$OHarnessStaticJSStart="
-            "&$OHarnessStaticScriptsClientValidation="
-            "&$OHarnessStaticScriptsExprCal="
-            "&$OLaunchFlow="
-            "&$OMenuBar="
-            "&$OMenuBarOld="
-            "&$OMobileAppNotify="
-            "&$OOperatorPresenceStatusScripts="
-            "&$OPMCPortalStaticScripts="
-            "&$ORepeatingDynamicLayout="
-            "&$OSessionUser="
-            "&$OSurveyStaticScripts="
-            "&$OWorkformStyles="
-            "&$Ocosmoslocale="
-            "&$OmenubarInclude="
-            "&$OpxButton="
-            "&$OpxDisplayText="
-            "&$OpxDropdown="
-            "&$OpxDynamicContainer="
-            "&$OpxHarnessContent="
-            "&$OpxHeaderCell="
-            "&$OpxHidden="
-            "&$OpxIcon="
-            "&$OpxLayoutContainer="
-            "&$OpxLayoutHeader="
-            "&$OpxLink="
-            "&$OpxMenu="
-            "&$OpxNonTemplate="
-            "&$OpxSection="
-            "&$OpxTextInput="
-            "&$OpxVisible="
-            "&$OpxWorkArea="
-            "&$OpxWorkAreaContent="
-            "&$OpyDirtyCheckConfirm="
-            "&$OpyWorkFormStandardEnd="
-            "&$OpyWorkFormStandardStart="
-            "&$Opycosmoscustomstyles="
-            "&$OpzAppLauncher="
-            "&$OpzDecimalInclude="
-            "&$OpzFrameLessDCScripts="
-            "&$OpzHarnessInlineScriptsEnd="
-            "&$OpzHarnessInlineScriptsStart="
-            "&$OpzPegaCompositeGadgetScripts="
-            "&$OpzRuntimeToolsBar="
-            "&$Opzpega_ui_harnesscontext="
-            "&$Ordlincludes="
-            "&$OxmlDocumentInclude="
-            "&$OCheckbox="
-            "&pzKeepPageMessages=true"
-            "&strPHarnessClass=ESTES-OPS-YardMgmt-UIPages"
-            "&strPHarnessPurpose=YardCoordinator"
-            "&UITemplatingStatus=N"
-            "&StreamName=WorkListGridsMain"
+            f"&ActivityParams={self.activity_params}"
+            "&$PDeclare_pyDisplay$ppyDCDisplayState$ppyActiveDocumentType=WORK"
             f"&BaseReference={self.row_page}"
             "&StreamClass=Rule-HTML-Section"
             "&partialRefresh=true"
@@ -335,182 +193,47 @@ class TransferFromHostlerToWorkbasket:
             "&eventSrcSection=Data-Admin-Operator-ID.WorkListGridsMain"
             "&PreDataTransform="
         )
-        response = await self.async_client.post(url, data=payload)
-        logger.debug(f"Step 3 (reload worklist grid) status {response.status_code}")
-        assert response.status_code == 200
-        return response
+        return await self._post_with_redirect(url, payload, html_file_num, "Step 3 (reload worklist grid)")
 
-    async def step4_select_hostler_and_submit(self, team_members_pd_key, fetch_worklist_pd_key, section_id_list,
-                                              pzuiactionzzz):
-        """
-        Finalizes the assignment transfer to the hostler.
-        """
+    async def step4_select_hostler_and_submit(self, html_file_num):
         url = (
-            f"{self.base_url}/!STANDARD"
-            f"?pzTransactionId={self.pzTransactionId}"
-            f"&pzFromFrame=&pzPrimaryPageName=pyPortalHarness&AJAXTrackID=6"
+            f"{self.base_url}?pzTransactionId={self.pzTransactionId}"
+            f"&pzFromFrame=&pzPrimaryPageName=pyPortalHarness&AJAXTrackID={self.AJAXTrackID}"
         )
         payload = (
-            f"D_FetchWorkListAssignmentsPpxResults1colWidthGBL="
-            f"&D_FetchWorkListAssignmentsPpxResults1colWidthGBR="
-            f"&${team_members_pd_key}$ppxResults$l4$ppySelected=true"
-            f"&${fetch_worklist_pd_key}$ppxResults$l1$ppySelected=true"
-            f"&pzuiactionzzz={pzuiactionzzz}"
-            f"&SectionIDList={section_id_list}"
+            "D_FetchWorkListAssignmentsPpxResults1colWidthGBL="
+            "&D_FetchWorkListAssignmentsPpxResults1colWidthGBR="
+            f"&${self.team_members_pd_key}$ppxResults$l4$ppySelected=true"
+            f"&${self.fetch_worklist_pd_key}$ppxResults$l1$ppySelected=true"
+            f"&pzuiactionzzz={self.pzuiactionzzz}"
+            f"&SectionIDList={self.sectionIDList}"
+            "&$PDeclare_pyDisplay$ppyDCDisplayState$ppyActiveDocumentType=WORK"
             "&PreActivitiesList="
             "&sectionParam="
             "&ActivityParams="
-            "&$OCompositeGadget="
-            "&$OControlMenu="
-            "&$ODesktopWrapperInclude="
-            "&$ODeterminePortalTop="
-            "&$ODynamicContainerFrameLess="
-            "&$ODynamicLayout="
-            "&$ODynamicLayoutCell="
-            "&$OEvalDOMScripts_Include="
-            "&$OForm="
-            "&$OGapIdentifier="
-            "&$OGridInc="
-            "&$OHarness="
-            "&$OHarnessStaticJSEnd="
-            "&$OHarnessStaticJSStart="
-            "&$OHarnessStaticScriptsClientValidation="
-            "&$OHarnessStaticScriptsExprCal="
-            "&$OLaunchFlow="
-            "&$OMenuBar="
-            "&$OMenuBarOld="
-            "&$OMobileAppNotify="
-            "&$OOperatorPresenceStatusScripts="
-            "&$OPMCPortalStaticScripts="
-            "&$ORepeatingDynamicLayout="
-            "&$OSessionUser="
-            "&$OSurveyStaticScripts="
-            "&$OWorkformStyles="
-            "&$Ocosmoslocale="
-            "&$OmenubarInclude="
-            "&$OpxButton="
-            "&$OpxDisplayText="
-            "&$OpxDropdown="
-            "&$OpxDynamicContainer="
-            "&$OpxHarnessContent="
-            "&$OpxHeaderCell="
-            "&$OpxHidden="
-            "&$OpxIcon="
-            "&$OpxLayoutContainer="
-            "&$OpxLayoutHeader="
-            "&$OpxLink="
-            "&$OpxMenu="
-            "&$OpxNonTemplate="
-            "&$OpxSection="
-            "&$OpxTextInput="
-            "&$OpxVisible="
-            "&$OpxWorkArea="
-            "&$OpxWorkAreaContent="
-            "&$OpyDirtyCheckConfirm="
-            "&$OpyWorkFormStandardEnd="
-            "&$OpyWorkFormStandardStart="
-            "&$Opycosmoscustomstyles="
-            "&$OpzAppLauncher="
-            "&$OpzDecimalInclude="
-            "&$OpzFrameLessDCScripts="
-            "&$OpzHarnessInlineScriptsEnd="
-            "&$OpzHarnessInlineScriptsStart="
-            "&$OpzPegaCompositeGadgetScripts="
-            "&$OpzRuntimeToolsBar="
-            "&$Opzpega_ui_harnesscontext="
-            "&$Ordlincludes="
-            "&$OxmlDocumentInclude="
-            "&$OCheckbox="
+            f"&BaseReference={self.row_page}"
             "&pyEncodedParameters=true"
             "&pzKeepPageMessages=true"
             "&strPHarnessClass=ESTES-OPS-YardMgmt-UIPages"
             "&strPHarnessPurpose=YardCoordinator"
             "&UITemplatingStatus=N"
             "&StreamName=WorkListGridsMain"
-            f"&BaseReference={self.row_page}"
             "&bClientValidation=true"
             "&HeaderButtonSectionName=-1"
             "&PagesToRemove="
             f"&pzHarnessID={self.pzHarnessID}"
             "&inStandardsMode=true"
         )
-        response = await self.async_client.post(url, data=payload)
-        logger.debug(f"Step 4 (select and submit) status {response.status_code}")
-        assert response.status_code == 200
-        return response
+        return await self._post_with_redirect(url, payload, html_file_num, "Step 4 (select and submit)")
 
-    async def step5_submit_modal_flow_action(self):
-        """
-        Submits the modal flow action to finalize transfer.
-        """
+    async def step5_submit_modal_flow_action(self, html_file_num):
         url = (
-            f"{self.base_url}/!STANDARD"
-            f"?pzTransactionId={self.pzTransactionId}"
-            f"&pzFromFrame=&pzPrimaryPageName=pyPortalHarness&AJAXTrackID=6"
+            f"{self.base_url}?pzTransactionId={self.pzTransactionId}"
+            f"&pzFromFrame=&pzPrimaryPageName=pyPortalHarness&AJAXTrackID={self.AJAXTrackID}"
         )
         payload = (
             "pyActivity=SubmitModalFlowAction"
-            "&$OCompositeGadget="
-            "&$OControlMenu="
-            "&$ODesktopWrapperInclude="
-            "&$ODeterminePortalTop="
-            "&$ODynamicContainerFrameLess="
-            "&$ODynamicLayout="
-            "&$ODynamicLayoutCell="
-            "&$OEvalDOMScripts_Include="
-            "&$OForm="
-            "&$OGapIdentifier="
-            "&$OGridInc="
-            "&$OHarness="
-            "&$OHarnessStaticJSEnd="
-            "&$OHarnessStaticJSStart="
-            "&$OHarnessStaticScriptsClientValidation="
-            "&$OHarnessStaticScriptsExprCal="
-            "&$OLaunchFlow="
-            "&$OMenuBar="
-            "&$OMenuBarOld="
-            "&$OMobileAppNotify="
-            "&$OOperatorPresenceStatusScripts="
-            "&$OPMCPortalStaticScripts="
-            "&$ORepeatingDynamicLayout="
-            "&$OSessionUser="
-            "&$OSurveyStaticScripts="
-            "&$OWorkformStyles="
-            "&$Ocosmoslocale="
-            "&$OmenubarInclude="
-            "&$OpxButton="
-            "&$OpxDisplayText="
-            "&$OpxDropdown="
-            "&$OpxDynamicContainer="
-            "&$OpxHarnessContent="
-            "&$OpxHeaderCell="
-            "&$OpxHidden="
-            "&$OpxIcon="
-            "&$OpxLayoutContainer="
-            "&$OpxLayoutHeader="
-            "&$OpxLink="
-            "&$OpxMenu="
-            "&$OpxNonTemplate="
-            "&$OpxSection="
-            "&$OpxTextInput="
-            "&$OpxVisible="
-            "&$OpxWorkArea="
-            "&$OpxWorkAreaContent="
-            "&$OpyDirtyCheckConfirm="
-            "&$OpyWorkFormStandardEnd="
-            "&$OpyWorkFormStandardStart="
-            "&$Opycosmoscustomstyles="
-            "&$OpzAppLauncher="
-            "&$OpzDecimalInclude="
-            "&$OpzFrameLessDCScripts="
-            "&$OpzHarnessInlineScriptsEnd="
-            "&$OpzHarnessInlineScriptsStart="
-            "&$OpzPegaCompositeGadgetScripts="
-            "&$OpzRuntimeToolsBar="
-            "&$Opzpega_ui_harnesscontext="
-            "&$Ordlincludes="
-            "&$OxmlDocumentInclude="
-            "&$OCheckbox="
+            "&$PDeclare_pyDisplay$ppyDCDisplayState$ppyActiveDocumentType=WORK"
             "&actionName="
             "&KeepMessages=false"
             "&ModalActionName=DisplayUserWorkList"
@@ -522,24 +245,17 @@ class TransferFromHostlerToWorkbasket:
             f"&pzHarnessID={self.pzHarnessID}"
             "&inStandardsMode=true"
         )
-        response = await self.async_client.post(url, data=payload)
-        logger.debug(f"Step 5 (submit modal flow) status {response.status_code}")
-        assert response.status_code == 200
-        return response
+        return await self._post_with_redirect(url, payload, html_file_num, "Step 5 (submit modal flow)")
 
-    async def transfer(self, fetch_worklist_pd_key, team_members_pd_key, section_id_list, pzuiactionzzz):
+    async def transfer(self):
         """
-        Runs the full transfer sequence step by step.
-        - fetch_worklist_pd_key: e.g. PD_FetchWorkListAssignments_pa579692650274020pz
-        - team_members_pd_key: e.g. PD_TeamMembersByWorkGroup_pa574308029294101pz
-        - section_id_list: e.g. GID_1751146918475%3A
-        - pzuiactionzzz: as extracted from HTML/script
+        Runs the full transfer sequence step by step, using self's values.
         """
-        await self.step1_grid_action()
-        await self.step2_select_assignment(fetch_worklist_pd_key)
-        await self.step3_reload_worklist_grid(section_id_list, fetch_worklist_pd_key)
-        await self.step4_select_hostler_and_submit(team_members_pd_key, fetch_worklist_pd_key, section_id_list,
-                                                   pzuiactionzzz)
-        await self.step5_submit_modal_flow_action()
+        html_file_num = 3000
+        res, html_file_num = await self.step1_grid_action(html_file_num)
+        res, html_file_num = await self.step2_select_assignment(html_file_num)
+        res, html_file_num = await self.step3_reload_worklist_grid(html_file_num)
+        res, html_file_num = await self.step4_select_hostler_and_submit(html_file_num)
+        res, html_file_num = await self.step5_submit_modal_flow_action(html_file_num)
         logger.info(f"Transfer from hostler {self.checker_id} to workbasket complete for task {self.task_id}.")
         return True

@@ -1,13 +1,15 @@
-import redis
 import json
+from redis.asyncio.client import Redis
 
-r = redis.Redis(host="localhost", port=6379, decode_responses=True)
 TASK_CHANNEL = "tasks-events"
 
-
-def publish_event(event_type, task):
+async def publish_event(event_type: str, task: dict, redis: Redis):
+    """
+    Publishes a task event to the pubsub channel.
+    Usage: await publish_event("created", task_dict, redis)
+    """
     data = json.dumps({
         "event": event_type,  # "created", "updated", "deleted"
         "task": task
     })
-    r.publish(TASK_CHANNEL, data)
+    await redis.publish(TASK_CHANNEL, data)

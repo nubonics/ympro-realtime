@@ -12,7 +12,7 @@ class CreateTask:
         self,
         yard_task_type,
         trailer_number,
-        door_number,
+        door,
         assigned_to,
         status='PENDING',
         locked=False,
@@ -30,7 +30,7 @@ class CreateTask:
         self.async_counter = 1
         self.yard_task_type = self.format_yard_task_type(yard_task_type=yard_task_type)
         self.trailer_number = trailer_number
-        self.door_number = door_number
+        self.door = door
         self.assigned_to = assigned_to
         self.status = status
         self.locked = locked
@@ -420,7 +420,7 @@ class CreateTask:
             "&TaskStatus=InitializeTask"
             "&TaskInstructions="
             "&TaskHelpPresent=false"
-            f"&$PpyWorkPage$pMetaData$pDoorNumber={self.door_number}"
+            f"&$PpyWorkPage$pMetaData$pDoorNumber={self.door}"
             f"&$PpyWorkPage$pMetaData$pTrailerNumber={self.trailer_number}"
             "&$PnewAssignPage$ppyCurrentActionLabel=InitializeTask"
             "&HarnessType=Perform"

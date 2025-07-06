@@ -1,6 +1,6 @@
 from typing import List
 
-from fastapi import FastAPI, Depends, Request, HTTPException, APIRouter
+from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from redis.asyncio import Redis
 
@@ -9,39 +9,13 @@ from backend.pega.yard_coordinator.session_manager.manager import PegaTaskSessio
 from backend.pega.yard_coordinator.deps import PegaTaskPoller
 from .models import PullTask, BringTask, HookTask, Task, CreateTaskRequest, TransferTaskRequest, DeleteTaskRequest
 
-app = FastAPI()
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 router = APIRouter()
 
 
-@app.on_event("startup")
-async def startup_event():
-    redis = await Redis.from_url("redis://localhost", decode_responses=True)
-    session_manager = PegaTaskSessionManager(redis)
-    await session_manager.login()
-    app.state.session_manager = session_manager
-    app.state.redis = redis
-    app.state.pega_poller = PegaTaskPoller(session_manager, redis)
-    # await app.state.pega_poller.start_polling()
+# CORS middleware should be set on the main app, not on the router!
 
+# --- Dependency helpers ---
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    if hasattr(app.state, "pega_poller"):
-        app.state.pega_poller.stop_polling()
-    if hasattr(app.state, "session_manager"):
-        await app.state.session_manager.deleter.shutdown()
-        await app.state.session_manager.close()
-    if hasattr(app.state, "redis"):
-        await app.state.redis.close()
-
-
-# Dependency helpers
 def get_session_manager(request: Request) -> PegaTaskSessionManager:
     return request.app.state.session_manager
 
@@ -50,10 +24,13 @@ def get_pega_poller(request: Request) -> PegaTaskPoller:
     return request.app.state.pega_poller
 
 
+def get_redis(request: Request) -> Redis:
+    return request.app.state.redis
+
+
 # --- API ROUTES ---
 
 def parse_task(task_dict):
-    # TODO: extract case_id [ in manager.py ] from a newly created task so this does not through a 500 code
     if task_dict is None:
         raise HTTPException(status_code=500, detail="parse_task received None instead of a task dict")
     ttype = task_dict.get("yard_task_type")
@@ -73,11 +50,9 @@ def parse_task(task_dict):
 
 @router.get("/api/external-tasks", response_model=List[Task])
 async def api_get_tasks(
-        session_manager: PegaTaskSessionManager = Depends(get_session_manager)
+        redis: Redis = Depends(get_redis)
 ):
-    redis = session_manager.task_store.redis
     tasks = await get_all_tasks(redis)
-    # Only return valid, business-rule-passing tasks (already filtered by session manager)
     return [parse_task(t) for t in tasks if t.get("yard_task_type")]
 
 
@@ -86,40 +61,34 @@ async def api_create_task(
         body: CreateTaskRequest,
         session_manager: PegaTaskSessionManager = Depends(get_session_manager)
 ):
-    # 1. Get the dict from the request
     task_dict = body.dict()
-    print(task_dict)
-
-    # 2. Forward the data to the external API, and get the case_id
-    # (Assume session_manager.run_create_task does this and returns the full data including case_id)
     created_task_data = await session_manager.run_create_task(
         yard_task_type=task_dict["yard_task_type"],
         trailer_number=task_dict.get("trailer"),
-        door_number=task_dict.get("door"),
+        door=task_dict.get("door"),
         assigned_to=task_dict.get("assigned_to"),
         status=task_dict.get("status", "PENDING"),
         locked=task_dict.get("locked", False),
         general_note=task_dict.get("general_note", ""),
         priority=task_dict.get("priority", "Normal"),
     )
-
-    # 3. Only now: parse the final Task/BringTask etc.
     try:
-        task = parse_task(created_task_data)  # This should now include case_id!
+        task = parse_task(created_task_data)
     except Exception as e:
         raise HTTPException(status_code=422, detail=str(e))
-
     return task
 
 
 @router.post("/api/transfer-task")
 async def api_transfer_task(
+        request: Request,
         body: TransferTaskRequest,
         session_manager: PegaTaskSessionManager = Depends(get_session_manager)
 ):
     result = await session_manager.run_transfer_task(
-        task_id=body.id,
+        task_id=body.case_id,
         assigned_to=body.assigned_to,
+        redis=request.app.state.redis
     )
     return {"status": "ok", "result": result}
 
@@ -165,6 +134,3 @@ async def stop_poller(poller: PegaTaskPoller = Depends(get_pega_poller)):
 async def start_poller(poller: PegaTaskPoller = Depends(get_pega_poller)):
     await poller.start_polling()
     return {"started": True}
-
-
-app.include_router(router)

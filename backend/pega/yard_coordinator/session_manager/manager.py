@@ -3,7 +3,6 @@ import datetime
 import os
 import re
 import time
-from html import unescape
 from os import getenv
 
 import httpx
@@ -27,7 +26,7 @@ from backend.pega.yard_coordinator.session_manager.pega_parser import (
 from backend.pega.yard_coordinator.session_manager.pubsub import PubSubManager
 from backend.pega.yard_coordinator.session_manager.task_store import TaskStore
 from backend.pega.yard_coordinator.transfer_task import TransferTask
-from backend.rules.validation import validate_and_store_tasks
+from backend.rules.validation import validate_and_store_tasks, delete_task_external
 
 logger = setup_logger(__name__)
 env_path = os.path.join(
@@ -342,12 +341,12 @@ class PegaTaskSessionManager:
             "tasks": [task.model_dump() for task in validated_tasks]
         }
 
-    async def run_create_task(self, yard_task_type, trailer_number, door_number, assigned_to, status='PENDING',
+    async def run_create_task(self, yard_task_type, trailer_number, door, assigned_to, status='PENDING',
                               locked=False, general_note='', priority='Normal'):
         task_creator = CreateTask(
             yard_task_type=yard_task_type,
             trailer_number=trailer_number,
-            door_number=door_number,
+            door=door,
             assigned_to=assigned_to,
             status=status,
             locked=locked,
@@ -365,7 +364,7 @@ class PegaTaskSessionManager:
         created_task_data = await task_creator.create_task()
         return created_task_data
 
-    async def run_transfer_task(self, task_id, assigned_to):
+    async def run_transfer_task(self, task_id, assigned_to, redis):
         """
         Handles all context lookup for transfer. Exposes a minimal API to FastAPI.
         """
@@ -414,19 +413,16 @@ class PegaTaskSessionManager:
         task_transfer = TransferTask(
             task_id=task_id,
             assigned_to=assigned_to,
+            session_manager=self,
             **kwargs
         )
-        task_transfer.set_pega_data(
-            base_url=self.base_url,
-            pzHarnessID=self.pzHarnessID,
-            pzTransactionId=getattr(self, self.pzTransactionId, None),
-            async_client=self.async_client,
-            details_url=self.details_url,
-        )
-        return await task_transfer.transfer()
+        return await task_transfer.transfer(redis=redis)
 
     async def run_delete_task(self, case_id: str):
+        # Delete the extenrally
         await self.deleter.run(case_id=case_id)
+        # Delete the task from the local store
+        await delete_task_external(task_id=case_id, task_store=self.task_store, session_manager=self)
 
     async def close(self):
         await self.async_client.aclose()
