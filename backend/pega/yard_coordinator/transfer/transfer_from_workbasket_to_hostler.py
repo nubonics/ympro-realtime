@@ -9,12 +9,12 @@ logger = setup_logger(__name__)
 class TransferFromWorkbasketToHostler:
     """
     Transfers a task from the workbasket to a hostler in Pega.
-    Requires task_id and checker_id (hostler user ID) as arguments.
+    Requires case_id and checker_id (hostler user ID) as arguments.
     All session/context must be injected via set_pega_data().
     """
 
-    def __init__(self, task_id, checker_id, session_manager):
-        self.task_id = task_id  # e.g. "T-34246622"
+    def __init__(self, case_id, checker_id, session_manager):
+        self.case_id = case_id  # e.g. "T-34246622"
         self.checker_id = checker_id  # e.g. "222982"
         self.session = session_manager
         self.async_client = self.session.async_client
@@ -43,7 +43,7 @@ class TransferFromWorkbasketToHostler:
         url = (
             f"{self.base_url}"
             f"?pyActivity=TransferAssignment"
-            f"&AssignmentID=ESTES-OPS-YARDMGMT-WORK%20{self.task_id}"
+            f"&AssignmentID=ESTES-OPS-YARDMGMT-WORK%20{self.case_id}"
             f"&DestinationType=worklist"
             f"&DestinationName={self.checker_id}"
             f"&Commit=true"
@@ -60,7 +60,7 @@ class TransferFromWorkbasketToHostler:
             if 'GOOD' not in follow.text:
                 logger.error(f"Transfer GET failed: {res.status_code}")
                 raise Exception(f"Transfer GET failed: {res.status_code}")
-        logger.info(f"Transferred task {self.task_id} to checker_id {self.checker_id}")
+        logger.info(f"Transferred task {self.case_id} to checker_id {self.checker_id}")
 
         # 2. Fetch SectionIDList for reloads
         # section_id_list = await self.fetch_section_id_list()
@@ -260,5 +260,5 @@ class TransferFromWorkbasketToHostler:
             save_html_to_file(follow.text, 2003, enabled=self.session.debug_html)
             logger.debug(f'Reload hostler summary widget POST status {follow.status_code}')
 
-        logger.info(f"Transfer from workbasket to hostler {self.checker_id} complete for task {self.task_id}.")
+        logger.info(f"Transfer from workbasket to hostler {self.checker_id} complete for task {self.case_id}.")
         return True

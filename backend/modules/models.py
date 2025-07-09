@@ -5,14 +5,23 @@ from pydantic import BaseModel, Field
 class PullTask(BaseModel):
     case_id: str
     yard_task_type: Literal["pull"] = "pull"
-    trailer: str  # Required
-    assigned_to: Optional[str] = None  # Required, but defaults to None
+    trailer: str
+    assigned_to: Optional[str] = None
     door: int
     zoneType: Optional[str] = None
     zoneLocation: Optional[str] = None
     note: Optional[str] = None
     priority: str = "normal"
-    # hostler: Optional[str] = None
+    # --- Grid context fields ---
+    row_page: Optional[str] = None
+    base_ref: Optional[str] = None
+    context_page: Optional[str] = None
+    fetch_worklist_pd_key: Optional[str] = None
+    team_members_pd_key: Optional[str] = None
+    section_id_list: Optional[str] = None
+    pzuiactionzzz: Optional[str] = None
+    strIndexInList: Optional[str] = None
+    activity_params: Optional[str] = None
 
     @classmethod
     def check_priority(cls, v):
@@ -24,14 +33,23 @@ class PullTask(BaseModel):
 class BringTask(BaseModel):
     case_id: str
     yard_task_type: Literal["bring"] = "bring"
-    trailer: str  # Required
-    assigned_to: Optional[str] = None  # Required, but defaults to None
+    trailer: str
+    assigned_to: Optional[str] = None
     door: int
     zoneType: Optional[str] = None
     zoneLocation: Optional[str] = None
     note: Optional[str] = None
     priority: str = "normal"
-    # hostler: Optional[str] = None
+    # --- Grid context fields ---
+    row_page: Optional[str] = None
+    base_ref: Optional[str] = None
+    context_page: Optional[str] = None
+    fetch_worklist_pd_key: Optional[str] = None
+    team_members_pd_key: Optional[str] = None
+    section_id_list: Optional[str] = None
+    pzuiactionzzz: Optional[str] = None
+    strIndexInList: Optional[str] = None
+    activity_params: Optional[str] = None
 
     @classmethod
     def check_priority(cls, v):
@@ -43,8 +61,8 @@ class BringTask(BaseModel):
 class HookTask(BaseModel):
     case_id: str
     yard_task_type: Literal["hook"] = "hook"
-    trailer: str  # Required
-    assigned_to: Optional[str] = None  # Required, but defaults to None
+    trailer: str
+    assigned_to: Optional[str] = None
     leadTrailer: Optional[str] = None
     leadDoor: Optional[int] = None
     middleTrailer: Optional[str] = None
@@ -55,7 +73,16 @@ class HookTask(BaseModel):
     dolly2: Optional[int] = None
     note: Optional[str] = None
     priority: str = "normal"
-    # hostler: Optional[str] = None
+    # --- Grid context fields ---
+    row_page: Optional[str] = None
+    base_ref: Optional[str] = None
+    context_page: Optional[str] = None
+    fetch_worklist_pd_key: Optional[str] = None
+    team_members_pd_key: Optional[str] = None
+    section_id_list: Optional[str] = None
+    pzuiactionzzz: Optional[str] = None
+    strIndexInList: Optional[str] = None
+    activity_params: Optional[str] = None
 
     @classmethod
     def check_priority(cls, v):
@@ -86,6 +113,12 @@ class CreateTaskRequest(BaseModel):
     priority: Optional[str] = "normal"
 
 
+# OUTDATED
 class TransferTaskRequest(BaseModel):
     case_id: str
     assigned_to: Optional[str] = None
+
+
+class TransferRequest(BaseModel):
+    case_id: str
+    assigned_to: str

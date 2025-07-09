@@ -3,6 +3,14 @@
   - [ ] !!! Pagination of hostler tasks !!!
   - [ ] Transfer from hostler to workbasket
   - [ ] Transfer from hostler to hostler
+  - [ ] Each task
+    - [ ] Get the zone for each task
+    - [x] Get the context_page for each task
+    - [x] Get the strIndexList for each task
+    - [ ] Get the activity_params for each task
+    - [x] Get the team_members_pd_key for each task
+    - [ ] Get the pzuiactionzzz for each task
+
   - ✅❌ Transfer from workbasket to hostler
     - works, but using playwright... so not the best 
     - need to switch to async httpx
@@ -11,7 +19,18 @@
 
 
 - [ ] Rules
-  - [ ] mty van counts as a duplicate, it should not 
+  - [x] mty van counts as a duplicate, it should not
+  - [x] dont delete door 0 tasks
+  - [x] dont delete NOT IN PLAN tasks
+  - [x] dont delete OB tasks
+  - [x] check for duplicate trailer # with different door #
+  - [x] check for duplicate door # with same trailer #
+  - [x] check for duplicate door and trailer #
+  - [ ] check for boxtruck tasks [ pulls ]
+    - [x] delete SPEC tasks
+    - ✅ delete 19xxx tasks
+    - [ ] delete 10xxx tasks
+  - ✅ check for preventive maintenance tasks
 
 
 - [ ] Pubsub

@@ -156,6 +156,8 @@ def extract_hostler_view_details(html_content):
                 yard_task_type = 'bring'
             elif 'hook' in yard_task_type.lower():
                 yard_task_type = 'hook'
+            elif 'prevent' in yard_task_type.lower() or 'maintenance' in yard_task_type.lower():
+                yard_task_type = 'preventive_maintenance'
             else:
                 raise Exception(f'Unknown yard task type: {yard_task_type} for case {case_id}\nextract_hostler_view_details')
             create_date_elements = row.xpath(".//td[@data-attribute-name='Create Date']")
@@ -186,9 +188,7 @@ def extract_hostler_view_details(html_content):
                 "type_of_trailer": None,
                 "drop_location": None,
                 "hostler_comments": None,
-                "door": door,
                 "trailer": trailer_number,
-                "id": case_id,
                 "yard_task_type": yard_task_type,
             }
             tasks.append(task)
@@ -242,9 +242,7 @@ def extract_workbasket_tasks(html_content: str, assigned_to: str = "workbasket")
             "type_of_trailer": None,
             "drop_location": None,
             "hostler_comments": None,
-            "door": door_no,
             "trailer": trailer_no,
-            "id": case_id,
             "yard_task_type": yard_task_type,
         }
         tasks.append(task)

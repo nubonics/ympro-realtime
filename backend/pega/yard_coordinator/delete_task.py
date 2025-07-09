@@ -40,7 +40,7 @@ class DeleteTask:
         if not self.last_login or (datetime.utcnow() - self.last_login > SESSION_LIFETIME):
             await self.login()
 
-    async def run(self, case_id: str):
+    async def delete_task(self, case_id: str):
         async with self.task_cond:
             if case_id not in self.task_set:
                 self.task_set.add(case_id)

@@ -17,7 +17,7 @@ class TransferTask:
 
     def __init__(
             self,
-            task_id,
+            case_id,
             assigned_to,
             session_manager,
             **kwargs
@@ -29,7 +29,7 @@ class TransferTask:
         """
         self.extra = kwargs
 
-        self.task_id = task_id
+        self.case_id = case_id
         self.assigned_to = assigned_to
         self.session_manager = session_manager
         self.base_url = self.session_manager.base_url
@@ -46,7 +46,7 @@ class TransferTask:
             if not (row_page and base_ref):
                 raise ValueError("row_page and base_ref are required for hostler → workbasket transfer.")
             transfer = TransferFromHostlerToWorkbasket(
-                task_id=self.task_id,
+                case_id=self.case_id,
                 checker_id=None,
                 session_manager=self.session_manager,
                 fetch_worklist_pd_key=self.extra.get("fetch_worklist_pd_key"),
@@ -55,8 +55,8 @@ class TransferTask:
                 pzuiactionzzz=self.extra.get("pzuiactionzzz"),
                 row_page=row_page,
                 base_ref=base_ref,
-                context_page=self.extra.get("context_page"),
-                strIndexInList=self.extra.get("strIndexInList"),
+                context_page=self.extra.get("context_page") or base_ref or row_page,
+                strIndexInList=self.extra.get("strIndexInList") or 'l' + base_ref.split('(')[1].split(')')[0] or 'l' + row_page.split('(')[1].split(')')[0],
                 activity_params=self.extra.get("activity_params"),
             )
             return await transfer.transfer()
@@ -71,7 +71,7 @@ class TransferTask:
 
             # Regardless of row_page/base_ref, use TransferFromWorkbasketToHostler!
             transfer = TransferFromWorkbasketToHostler(
-                task_id=self.task_id,
+                case_id=self.case_id,
                 checker_id=checker_id,
                 session_manager=self.session_manager,
             )

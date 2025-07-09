@@ -2,7 +2,6 @@ from backend.rules.helper import get_attr
 
 
 def get_hook_trailer_set(task):
-    # Collect all trailers present (upper-cased & stripped)
     trailers = []
     for attr in ("leadTrailer", "middleTrailer", "tailTrailer"):
         val = get_attr(task, attr, None)
@@ -12,12 +11,12 @@ def get_hook_trailer_set(task):
 
 
 def check_boxtrucks(trailer_number: str) -> bool:
-    """
-    Returns True if trailer_number is a box truck (starts with 19, 10, or contains SPEC).
-    """
     if not trailer_number:
         return False
     trailer_number = trailer_number.upper()
+    trailer_number = trailer_number.strip("'\"")
+    print("Checking boxtruck:", trailer_number)  # <-- Debug print
+    print("Checking boxtruck:", repr(trailer_number))  # <-- Debug print
     return (
             trailer_number.startswith("19")
             or trailer_number.startswith("10")
@@ -32,19 +31,37 @@ def check_preventative_maintenance(yard_task_type: str):
     return "PREVENTIVE" in s or "PREVENTATIVE" in s
 
 
+def is_duplicate_mty_task(new_task, all_tasks):
+    # Use get_attr for both trailer/trailer_number and door
+    trailer = (get_attr(new_task, "trailer_number") or get_attr(new_task, "trailer") or "").upper()
+    door = get_attr(new_task, "door")
+
+    # SKIP duplicate check for door 0 (special case for notes)
+    if door == 0 or door == "0":
+        return False
+
+    # If this is an MTY/EMPTY task, check for another active MTY/EMPTY at the same door
+    if "MTY" in trailer or "EMPTY" in trailer:
+        for t in all_tasks:
+            t_trailer = (get_attr(t, "trailer_number") or get_attr(t, "trailer") or "").upper()
+            t_door = get_attr(t, "door")
+            if t_door == door and ("MTY" in t_trailer or "EMPTY" in t_trailer):
+                return True
+    return False
+
+
 def check_duplicate_task(task, all_tasks):
     task_type = get_attr(task, "yard_task_type")
     task_door = str(get_attr(task, "door"))
-    trailer_number = str(get_attr(task, "trailer", "")).strip().upper()
+    trailer_number = str(get_attr(task, "trailer", "") or get_attr(task, "trailer_number", "")).strip().upper()
 
     if task_type in ("pull", "bring"):
         # Skip duplication check if the door is 0, as these are notes for yard coordinators
-        if task_door == 0 or task_door == "0":
+        if task_door == "0" or task_door == 0:
             return True, None
-        # Skip duplication check if the trailer number has `empty` or mty` in it as this is used for communication
-        # between yard coordinators and hostlers
-        if 'MTY' in trailer_number or 'EMPTY' in trailer_number:
-            return True, None
+        # Check for duplicate MTY/EMPTY
+        if is_duplicate_mty_task(task, all_tasks):
+            return False, f"Duplicate MTY/EMPTY task for door {task_door}"
         elif 'NOT IN PLAN' in trailer_number:
             return True, None
         elif 'OB' in trailer_number:
@@ -56,7 +73,6 @@ def check_duplicate_task(task, all_tasks):
             if get_attr(t, "yard_task_type") == task_type and str(get_attr(t, "door")) == task_door
         ]
     elif task_type == "hook":
-        # Hook logic here... (implement if needed)
         return True, None
     else:
         same = [

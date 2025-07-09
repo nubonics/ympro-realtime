@@ -1,6 +1,12 @@
+import urllib
+from urllib.parse import urlencode
+
 from backend.modules.colored_logger import setup_logger
 import httpx
+
+from backend.pega.yard_coordinator.hostler_details import fetch_hostler_details
 from backend.pega.yard_coordinator.session_manager.debug import save_html_to_file
+from backend.pega.yard_coordinator.session_manager.task_store import TaskStore
 
 logger = setup_logger(__name__)
 
@@ -11,26 +17,29 @@ class TransferFromHostlerToWorkbasket:
     All session/context must be injected via a session_manager, which provides async_client, tokens, cookies, etc.
     """
 
-    def __init__(self, task_id, checker_id, session_manager, **kwargs):
-        self.task_id = task_id  # e.g. "T-34246622"
+    def __init__(self, case_id, checker_id, session_manager, **kwargs):
+        self.case_id = case_id  # e.g. "T-34246622"
         self.checker_id = checker_id  # e.g. "222982"
         self.session = session_manager
         self.async_client = self.session.async_client
         self.base_url = self.session.base_url
         self.pzHarnessID = self.session.pzHarnessID
-        self.sectionIDList = getattr(self.session, "sectionIDList", None)
         self.fingerprint_token = self.session.fingerprint_token
         self.csrf_token = self.session.csrf_token
-        self.pzuiactionzzz = getattr(self.session, "pzuiactionzzz", "")
-        self.fetch_worklist_pd_key = getattr(self.session, "fetch_worklist_pd_key", "")
-        self.team_members_pd_key = getattr(self.session, "team_members_pd_key", "")
-        self.activity_params = getattr(self.session, "activity_params", "")
-        self.row_page = kwargs.get("row_page") or getattr(self.session, "row_page", "")
-        self.context_page = kwargs.get("context_page") or getattr(self.session, "context_page", "")
-        self.strIndexInList = kwargs.get("strIndexInList") or getattr(self.session, "strIndexInList", "")
-        self.AJAXTrackID = getattr(self.session, "AJAXTrackID", 16)
+        self.AJAXTrackID = "1"
         self.pzTransactionId = getattr(self.session, "pzTransactionId", "")
         self.debug_html = getattr(self.session, "debug_html", False)
+        self.pzTransactionId = self.session.pzTransactionId
+
+        # --- Always use kwargs, which should be per-task/store context ---
+        self.section_id_list = kwargs.get("section_id_list", "")
+        self.pzuiactionzzz = kwargs.get("pzuiactionzzz", "")
+        self.fetch_worklist_pd_key = kwargs.get("fetch_worklist_pd_key", "")
+        self.team_members_pd_key = kwargs.get("team_members_pd_key", "")
+        self.activity_params = kwargs.get("activity_params", "")
+        self.row_page = kwargs.get("row_page", "")
+        self.context_page = kwargs.get("context_page", "")
+        self.strIndexInList = kwargs.get("strIndexInList", "")
 
         self.default_headers = {
             "Accept": "*/*",
@@ -44,13 +53,13 @@ class TransferFromHostlerToWorkbasket:
         }
 
         logger.debug(f"TransferFromHostlerToWorkbasket initialized with:"
-                     f"\n  task_id: {self.task_id}"
+                     f"\n  case_id: {self.case_id}"
                      f"\n  checker_id: {self.checker_id}"
                      f"\n  session: {self.session!r}"
                      f"\n  async_client: {self.async_client!r}"
                      f"\n  base_url: {self.base_url!r}"
                      f"\n  pzHarnessID: {self.pzHarnessID!r}"
-                     f"\n  sectionIDList: {self.sectionIDList!r}"
+                     f"\n  section_id_list: {self.section_id_list!r}"
                      f"\n  fingerprint_token: {self.fingerprint_token!r}"
                      f"\n  csrf_token: {self.csrf_token!r}"
                      f"\n  pzuiactionzzz: {self.pzuiactionzzz!r}"
@@ -92,57 +101,56 @@ class TransferFromHostlerToWorkbasket:
             return follow, html_file_num + 2
         return res, html_file_num + 1
 
+    async def step1_grid_action(self):
+        task_data = await self.session.task_store.get_task(self.case_id)
+        base_ref = task_data['base_ref']
+        await fetch_hostler_details(session_manager=self.session, base_ref=base_ref, step1_grid_action=True)
+
+    '''
     async def step1_grid_action(self, html_file_num):
-        url = (
-            f"{self.base_url}?pzTransactionId={self.pzTransactionId}"
-            f"&pzFromFrame=&pzPrimaryPageName=pyPortalHarness&AJAXTrackID={self.AJAXTrackID}"
-            f"&eventSrcSection=Data-Portal.TeamMembersGrid"
+        """
+        POST the first step of the transfer-to-workbasket flow, matching the minimal/practical request
+        used for hostler grid row detail fetch.
+        """
+        # Use the same logic as fetch_hostler_details first page
+        from backend.pega.yard_coordinator.hostler_utils import build_location_params
+
+        task_data = await self.session.task_store.get_task(self.case_id)
+        base_ref = task_data['base_ref']
+        logger.debug(f'step 1 grid action, base_ref: {base_ref}')
+
+        location_params_str = build_location_params(base_ref, self.pzHarnessID)
+        data = {
+            "pyActivity": "pzRunActionWrapper",
+            "rowPage": base_ref,
+            "Location": location_params_str,
+            "PagesToCopy": base_ref.split(".pxResults")[0],
+            "pzHarnessID": self.pzHarnessID,
+            "UITemplatingStatus": "N",
+            "inStandardsMode": "true",
+            "eventSrcSection": "Data-Portal.TeamMembersGrid",
+            "pzActivity": "pzPerformGridAction",
+            "skipReturnResponse": "true",
+            "pySubAction": "runAct",
+        }
+        response = await self.async_client.post(
+            f"{self.base_url.replace('STANDARD', 'DCSPA_YardCoordinator')}",
+            headers=self.session.get_standard_headers(),
+            data=data,
+            params=self.session.get_standard_params(),
         )
-        location = (
-            f"pyActivity=pzPrepareAssignment"
-            f"&UITemplatingStatus=Y"
-            f"&NewTaskStatus=DisplayUserWorkList"
-            f"&TaskIndex="
-            f"&StreamType=Rule-HTML-Section"
-            f"&FieldError="
-            f"&FormError="
-            f"&pyCustomError="
-            f"&bExcludeLegacyJS=true"
-            f"&ModalSection=pzModalTemplate"
-            f"&modalStyle="
-            f"&IgnoreSectionSubmit=true"
-            f"&bInvokedFromControl=true"
-            f"&BaseReference="
-            f"&isModalFlowAction=true"
-            f"&bIsModal=true"
-            f"&bIsOverlay=false"
-            f"&StreamClass=Rule-HTML-Section"
-            f"&UITemplatingScriptLoad=true"
-            f"&ActionSection=pzModalTemplate"
-            f"&rowPage={self.row_page}"
-            f"&GridAction=true"
-            f"&BaseThread=STANDARD"
-            f"&pzHarnessID={self.pzHarnessID}"
-        )
-        payload = (
-            "pyActivity=pzRunActionWrapper"
-            "&$PDeclare_pyDisplay$ppyDCDisplayState$ppyActiveDocumentType=WORK"
-            f"&rowPage={self.row_page}"
-            f"&Location={location}"
-            f"&PagesToCopy={self.row_page}"
-            f"&pzHarnessID={self.pzHarnessID}"
-            "&UITemplatingStatus=N"
-            "&inStandardsMode=true"
-            "&eventSrcSection=Data-Portal.TeamMembersGrid"
-            "&pzActivity=pzPerformGridAction"
-            "&skipReturnResponse=true"
-            "&pySubAction=runAct"
-        )
-        return await self._post_with_redirect(url, payload, html_file_num, "Step 1 (grid action)")
+        if response.status_code == 303 or "location" not in response.headers:
+            logger.debug(f'Step 1 redirect detected: {response.headers["location"]}')
+            response = await self.async_client.get(response.headers["location"])
+            logger.debug(f'Step 1 redirected response: {response.status_code}')
+        save_html_to_file(response.content, html_file_num, enabled=self.debug_html)
+        logger.debug(f"Step 1 (grid action, minimal form) POST status {response.status_code}")
+        return response, html_file_num + 1
+    '''
 
     async def step2_select_assignment(self, html_file_num):
         url = (
-            f"{self.base_url}?pzTransactionId={self.pzTransactionId}"
+            f"{self.base_url.replace('STANDARD', 'DCSPA_YardCoordinator')}?pzTransactionId={self.pzTransactionId}"
             f"&pzFromFrame=&pzPrimaryPageName=pyPortalHarness&AJAXTrackID={self.AJAXTrackID}"
             "&eventSrcSection=Data-Admin-Operator-ID.WorkListGridsMain"
         )
@@ -164,7 +172,7 @@ class TransferFromHostlerToWorkbasket:
 
     async def step3_reload_worklist_grid(self, html_file_num):
         url = (
-            f"{self.base_url}?pzTransactionId={self.pzTransactionId}"
+            f"{self.base_url.replace('STANDARD', 'DCSPA_YardCoordinator')}?pzTransactionId={self.pzTransactionId}"
             f"&pzFromFrame=&pzPrimaryPageName=pyPortalHarness&AJAXTrackID={self.AJAXTrackID}"
             "&eventSrcSection=Data-Admin-Operator-ID.WorkListGridsMain"
         )
@@ -172,7 +180,7 @@ class TransferFromHostlerToWorkbasket:
             "pyActivity=ReloadSection"
             "&D_FetchWorkListAssignmentsPpxResults1colWidthGBL="
             "&D_FetchWorkListAssignmentsPpxResults1colWidthGBR="
-            f"&SectionIDList={self.sectionIDList}"
+            f"&SectionIDList={self.section_id_list}"
             f"&${self.fetch_worklist_pd_key}$ppxResults$l1$ppySelected=true"
             f"&strIndexInList={self.strIndexInList}"
             "&PreActivitiesList="
@@ -197,7 +205,7 @@ class TransferFromHostlerToWorkbasket:
 
     async def step4_select_hostler_and_submit(self, html_file_num):
         url = (
-            f"{self.base_url}?pzTransactionId={self.pzTransactionId}"
+            f"{self.base_url.replace('STANDARD', 'DCSPA_YardCoordinator')}?pzTransactionId={self.pzTransactionId}"
             f"&pzFromFrame=&pzPrimaryPageName=pyPortalHarness&AJAXTrackID={self.AJAXTrackID}"
         )
         payload = (
@@ -206,7 +214,7 @@ class TransferFromHostlerToWorkbasket:
             f"&${self.team_members_pd_key}$ppxResults$l4$ppySelected=true"
             f"&${self.fetch_worklist_pd_key}$ppxResults$l1$ppySelected=true"
             f"&pzuiactionzzz={self.pzuiactionzzz}"
-            f"&SectionIDList={self.sectionIDList}"
+            f"&SectionIDList={self.section_id_list}"
             "&$PDeclare_pyDisplay$ppyDCDisplayState$ppyActiveDocumentType=WORK"
             "&PreActivitiesList="
             "&sectionParam="
@@ -228,7 +236,7 @@ class TransferFromHostlerToWorkbasket:
 
     async def step5_submit_modal_flow_action(self, html_file_num):
         url = (
-            f"{self.base_url}?pzTransactionId={self.pzTransactionId}"
+            f"{self.base_url.replace('STANDARD', 'DCSPA_YardCoordinator')}?pzTransactionId={self.pzTransactionId}"
             f"&pzFromFrame=&pzPrimaryPageName=pyPortalHarness&AJAXTrackID={self.AJAXTrackID}"
         )
         payload = (
@@ -252,10 +260,10 @@ class TransferFromHostlerToWorkbasket:
         Runs the full transfer sequence step by step, using self's values.
         """
         html_file_num = 3000
-        res, html_file_num = await self.step1_grid_action(html_file_num)
-        res, html_file_num = await self.step2_select_assignment(html_file_num)
-        res, html_file_num = await self.step3_reload_worklist_grid(html_file_num)
-        res, html_file_num = await self.step4_select_hostler_and_submit(html_file_num)
-        res, html_file_num = await self.step5_submit_modal_flow_action(html_file_num)
-        logger.info(f"Transfer from hostler {self.checker_id} to workbasket complete for task {self.task_id}.")
+        res = await self.step1_grid_action()
+        # res, html_file_num = await self.step2_select_assignment(html_file_num)
+        # res, html_file_num = await self.step3_reload_worklist_grid(html_file_num)
+        # res, html_file_num = await self.step4_select_hostler_and_submit(html_file_num)
+        # res, html_file_num = await self.step5_submit_modal_flow_action(html_file_num)
+        logger.info(f"Transfer from hostler {self.checker_id} to workbasket complete for task {self.case_id}.")
         return True

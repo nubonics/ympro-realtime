@@ -58,10 +58,14 @@ class PegaTaskPoller:
             while not self.stop_event.is_set():
                 logger.debug("Starting poll cycle via PegaTaskPoller...")
 
-                # 1. Check if re-login is needed
-                if self.pega_task_session_manager.should_relogin(max_age_hours=11):
-                    logger.info("Session older than 11 hours, performing re-login...")
-                    await self.pega_task_session_manager.login()
+                try:
+                    # 1. Check if re-login is needed
+                    if self.pega_task_session_manager.should_relogin(max_age_hours=11):
+                        logger.info("Session older than 11 hours, performing re-login...")
+                        await self.pega_task_session_manager.login()
+                except Exception as e:
+                    logger.error(f"Error during session check or login: {e}")
+                    raise PollingError("Failed to check session or login.") from e
 
                 # 2. Fetch all tasks from Pega
                 try:
@@ -69,30 +73,49 @@ class PegaTaskPoller:
                 except Exception as e:
                     logger.error(f"Error during fetching tasks from Pega: {e}")
 
-                # 3. Get all parsed tasks from the task store
-                all_task_dicts = await self.pega_task_session_manager.task_store.get_all_tasks()
+                try:
+                    # 3. Get all parsed tasks from the task store
+                    all_task_dicts = await self.pega_task_session_manager.task_store.get_all_tasks()
+                except Exception as e:
+                    logger.error(f"Error fetching tasks from task store: {e}")
+                    all_task_dicts = []
 
-                # 4. Validate and store tasks (returns only valid tasks, deletes unwanted)
-                valid_tasks = await validate_and_store_tasks(
-                    all_task_dicts, self.pega_task_session_manager.task_store,
-                    session_manager=self.pega_task_session_manager
-                )
+                try:
+                    # 4. Validate and store tasks (returns only valid tasks, deletes unwanted)
+                    valid_tasks = await validate_and_store_tasks(
+                        all_task_dicts, self.pega_task_session_manager.task_store,
+                        session_manager=self.pega_task_session_manager
+                    )
+                except Exception as e:
+                    logger.error(f"Error validating and storing tasks: {e}")
+                    valid_tasks = []
+
                 unwanted_count = len(all_task_dicts) - len(valid_tasks)
 
-                # 5. Store only valid tasks in Redis
-                await set_latest_poll_result(
-                    [t.model_dump() if hasattr(t, "model_dump") else t for t in valid_tasks],
-                    self.redis
-                )
-                if self.handle_payload is not None:
-                    await self.handle_payload(valid_tasks, self.redis)
+                try:
+                    # 5. Store only valid tasks in Redis
+                    await set_latest_poll_result(
+                        [t.model_dump() if hasattr(t, "model_dump") else t for t in valid_tasks],
+                        self.redis
+                    )
+                    if self.handle_payload is not None:
+                        await self.handle_payload(valid_tasks, self.redis)
+                except Exception as e:
+                    logger.error(f"Error storing valid tasks in Redis: {e}")
+                    raise PollingError("Failed to store valid tasks in Redis.") from e
 
-                # 6. Log counts
-                logger.info(
-                    f"Poll cycle: {len(valid_tasks)} valid tasks, {unwanted_count} unwanted (deleted) tasks, poll interval={self.polling_interval}s"
-                )
+                try:
+                    # 6. Log counts
+                    logger.info(
+                        f"Poll cycle: {len(valid_tasks)} valid tasks, {unwanted_count} unwanted (deleted) tasks, poll interval={self.polling_interval}s"
+                    )
+                except Exception as e:
+                    logger.error(f"Error logging counts: {e}")
 
-                await cleanup_expired_tasks(self.redis)
+                try:
+                    await cleanup_expired_tasks(self.redis)
+                except Exception as e:
+                    logger.error(f"Error during cleanup of expired tasks: {e}")
 
                 # Wait for next cycle
                 try:

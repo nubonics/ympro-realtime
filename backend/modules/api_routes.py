@@ -7,9 +7,13 @@ from redis.asyncio import Redis
 from backend.modules.storage import get_all_tasks
 from backend.pega.yard_coordinator.session_manager.manager import PegaTaskSessionManager
 from backend.pega.yard_coordinator.deps import PegaTaskPoller
-from .models import PullTask, BringTask, HookTask, Task, CreateTaskRequest, TransferTaskRequest, DeleteTaskRequest
+from .colored_logger import setup_logger
+from .models import PullTask, BringTask, HookTask, Task, CreateTaskRequest, DeleteTaskRequest, \
+    TransferRequest
+from ..pega.yard_coordinator.hostler_details import fetch_hostler_details
 
 router = APIRouter()
+logger = setup_logger(__name__)
 
 
 # CORS middleware should be set on the main app, not on the router!
@@ -79,18 +83,52 @@ async def api_create_task(
     return task
 
 
-@router.post("/api/transfer-task")
-async def api_transfer_task(
-        request: Request,
-        body: TransferTaskRequest,
-        session_manager: PegaTaskSessionManager = Depends(get_session_manager)
-):
-    result = await session_manager.run_transfer_task(
-        task_id=body.case_id,
-        assigned_to=body.assigned_to,
-        redis=request.app.state.redis
+# @router.post("/api/transfer-task")
+# async def api_transfer_task(
+#         request: Request,
+#         body: TransferTaskRequest,
+#         session_manager: PegaTaskSessionManager = Depends(get_session_manager)
+# ):
+#     result = await session_manager.run_transfer_task(
+#         task_id=body.case_id,
+#         assigned_to=body.assigned_to,
+#         redis=request.app.state.redis
+#     )
+#     return {"status": "ok", "result": result}
+async def transfer_task_from_hostler(session_manager, base_ref, task_id, assigned_to, redis):
+    # --- Step 1: Context extraction (fetch latest task grid, enrich all tasks with context) ---
+    hostler_details = await fetch_hostler_details(session_manager, base_ref)
+    # hostler_details["tasks"] is a list of dicts with all context fields attached
+    logger.debug(f'transfer_task_from_hostler: hostler_details for {base_ref}: {hostler_details}')
+
+    # --- Step 2: Find the task to transfer and perform the transfer ---
+    task_to_transfer = next(
+        (t for t in hostler_details["tasks"] if t["case_id"] == task_id), None
     )
-    return {"status": "ok", "result": result}
+    if not task_to_transfer:
+        raise Exception(f"Task {task_id} not found in hostler grid for {base_ref}")
+
+    # Make sure the task is saved to the store with the latest context
+    await session_manager.task_store.upsert_task(task_to_transfer)
+
+    # Run the transfer using the per-task context
+    result = await session_manager.run_transfer_task(task_id, assigned_to, redis)
+
+    return result
+
+
+@router.post("/api/transfer-task")
+async def transfer_task_endpoint(
+    request: TransferRequest,
+    session_manager=Depends(get_session_manager),
+    redis=Depends(get_redis),
+):
+    result = await session_manager.transfer_task(
+        case_id=request.case_id,
+        assigned_to=request.assigned_to,
+        redis=redis,
+    )
+    return {"result": result}
 
 
 @router.post("/api/delete-task")

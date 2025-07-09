@@ -1,11 +1,9 @@
-from backend.modules.colored_logger import setup_logger
 from pydantic import TypeAdapter
 
+from backend.modules.colored_logger import setup_logger
 from backend.modules.models import Task
-from backend.rules.custom_checks import check_duplicate_task, check_boxtrucks, check_preventative_maintenance
-
-import re
-
+from backend.rules.custom_checks import check_duplicate_task, check_boxtrucks, check_preventative_maintenance, \
+    is_duplicate_mty_task
 from backend.rules.helper import get_attr
 
 ALLOWED_TYPES = {"pull", "bring", "hook"}
@@ -19,24 +17,31 @@ def passes_business_rules(task, all_tasks):
     allowed, reason = check_duplicate_task(task, all_tasks)
     if not allowed:
         return False, reason
-    # Box truck check - ONLY restrict boxtrucks for pull tasks
-    trailer_number = get_attr(task, "trailer", "")
+
+    # Box truck check - ONLY prevent pull boxtruck tasks
+    trailer_number = get_attr(task, "trailer", "") or get_attr(task, "trailer_number", "")
     if get_attr(task, "yard_task_type", None) == "pull" and check_boxtrucks(trailer_number):
         return False, f"Box trucks (trailer: {trailer_number}) are not allowed for pull tasks."
+
     # Preventative maintenance check
     yard_task_type = get_attr(task, "yard_task_type", "")
     if check_preventative_maintenance(yard_task_type=yard_task_type):
         return False, f"Trailer {trailer_number} is flagged for preventative maintenance."
 
-    # Only one active pull or bring per trailer number
+    # MTY/EMPTY: Only one active at the same door
+    if is_duplicate_mty_task(task, all_tasks):
+        return False, f"Duplicate MTY/EMPTY trailer at door {get_attr(task, 'door')} is not allowed."
+
+    # Only one active pull or bring per trailer number (for non-MTY/EMPTY)
     if yard_task_type in ("pull", "bring") and trailer_number:
-        for other in all_tasks:
-            if (
-                other is not task
-                and get_attr(other, "yard_task_type") == yard_task_type
-                and get_attr(other, "trailer") == trailer_number
-            ):
-                return False, f"Duplicate {yard_task_type} for trailer {trailer_number} is not allowed."
+        if not ("MTY" in trailer_number.upper() or "EMPTY" in trailer_number.upper()):
+            for other in all_tasks:
+                if (
+                    other is not task
+                    and get_attr(other, "yard_task_type") == yard_task_type
+                    and (get_attr(other, "trailer", "") or get_attr(other, "trailer_number", "")) == trailer_number
+                ):
+                    return False, f"Duplicate {yard_task_type} for trailer {trailer_number} is not allowed."
     return True, None
 
 
@@ -90,14 +95,15 @@ def is_allowed_type(task_dict):
     return task_type in ALLOWED_TYPES
 
 
-async def delete_task_external(task_id, task_store, session_manager=None):
+async def delete_task_external(case_id, task_store, session_manager=None):
+    # TODO: This does not belong here
     """Delete a task from the external system or just the local store."""
     if session_manager is not None:
-        await session_manager.run_delete_task(task_id)
-        if await task_store.get_task(task_id) is not None:
-            await task_store.delete_task(task_id)
+        await session_manager.run_delete_task(case_id)
+        if await task_store.get_task(case_id) is not None:
+            await task_store.delete_task(case_id)
     else:
-        await task_store.delete_task(task_id)
+        await task_store.delete_task(case_id)
 
 
 async def validate_and_store_task(task_dict, task_store, session_manager=None, all_tasks=None):
