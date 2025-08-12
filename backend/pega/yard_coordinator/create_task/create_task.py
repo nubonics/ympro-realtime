@@ -1,9 +1,11 @@
-from backend.pega.yard_coordinator.create_task.create_task_parser import extract_pzuiactionzzz, get_pzTransactionId, \
-    get_PD_pzRenderFeedContext, get_PD_pzFeedParams
 from backend.pega.yard_coordinator.session_manager.debug import save_html_to_file
 from backend.modules.colored_logger import setup_logger
 import time
 from uuid import uuid4
+
+from backend.pega.yard_coordinator.session_manager.pega_parser import extract_pzuiactionzzz_for_create_task, \
+    get_pzTransactionId_for_create_task, get_PD_pzRenderFeedContext_for_create_task, get_PD_pzFeedParams_for_create_task
+
 logger = setup_logger(__name__)
 
 
@@ -44,10 +46,14 @@ class CreateTask:
         self.hostler_store = hostler_store
 
     async def set_checker_id(self):
+        logger.debug('Setting hostler checker id...')
+        logger.debug(f'self.assigned_to: {self.assigned_to}')
         if self.assigned_to and self.assigned_to.lower() != "workbasket" and self.hostler_store:
             self.assigned_to_checker_id = await self.hostler_store.lookup_checker_id(self.assigned_to)
+            logger.debug(f'Hostler checker id: {self.assigned_to_checker_id}')
         else:
             self.assigned_to_checker_id = ""
+            logger.debug(f'Hostler checker id: {self.assigned_to_checker_id}')
 
     @staticmethod
     def format_yard_task_type(yard_task_type):
@@ -87,6 +93,13 @@ class CreateTask:
         await self.step2()
         await self.step6()
         await self.step4()
+        return {
+            "success": True,
+            "case_id": self.case_id if hasattr(self, 'case_id') else None,
+            "assigned_to": self.assigned_to,
+            "method": "delete_create",
+            "error": None
+        }
 
     async def step1(self):
         logger.debug('Create Task - Starting Step # 1')
@@ -219,10 +232,10 @@ class CreateTask:
         assert response.status_code == 200 or 303
 
         content = response.content
-        self.pzuiactionzzz = extract_pzuiactionzzz(html_content=content)
-        self.pzTransactionId_1 = get_pzTransactionId(html_content=content)
-        self.PD_pzRenderFeedContext = get_PD_pzRenderFeedContext(html_content=content)
-        self.PD_pzFeedParams = get_PD_pzFeedParams(html_content=content)
+        self.pzuiactionzzz = extract_pzuiactionzzz_for_create_task(html_content=content)
+        self.pzTransactionId_1 = get_pzTransactionId_for_create_task(html_content=content)
+        self.PD_pzRenderFeedContext = get_PD_pzRenderFeedContext_for_create_task(html_content=content)
+        self.PD_pzFeedParams = get_PD_pzFeedParams_for_create_task(html_content=content)
         del content
 
         logger.debug(f'self.pzuiactionzzz: {self.pzuiactionzzz}')
@@ -530,7 +543,7 @@ class CreateTask:
             follow_redirects=True
         )
 
-        self.pzTransactionId_2 = get_pzTransactionId(html_content=response.content)
+        self.pzTransactionId_2 = get_pzTransactionId_for_create_task(html_content=response.content)
 
         save_html_to_file(content=response.content, step=4)
 

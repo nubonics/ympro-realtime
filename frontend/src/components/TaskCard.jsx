@@ -1,9 +1,11 @@
-import React, { useState, useRef } from "react";
+// src/components/TaskCard.jsx
+import React, { useState, useRef, useEffect } from "react";
 import { useDrag, useDrop } from "react-dnd";
 import { FaLock, FaLockOpen, FaCopy } from "react-icons/fa";
 import { TASK_TYPES } from "../constants/taskTypes";
+import { useToast } from "./ui/ToastProvider";
 
-function TaskCard({
+export default function TaskCard({
   task,
   isDraggable = true,
   onRemove,
@@ -11,35 +13,31 @@ function TaskCard({
   isHostlerTask,
   onLockToggle,
 }) {
-  const [copied, setCopied] = useState(false);
+  const toast = useToast();
   const [locked, setLocked] = useState(task.locked ?? false);
   const [showTooltip, setShowTooltip] = useState(false);
   const tooltipTimeout = useRef(null);
 
-  // Drag source setup (for all tasks)
+  // Drag
+  const dragType = String(task?.type || "").toLowerCase();
   const [{ isDragging }, drag] = useDrag({
-    type: (task.type || "").toLowerCase(),
-    item: () => ({
-      type: (task.type || "").toLowerCase(),
-      task,
-    }),
+    type: dragType,
+    item: () => ({ type: dragType, task }),
     canDrag: isDraggable,
-    collect: (monitor) => ({
-      isDragging: monitor.isDragging(),
-    }),
+    collect: (monitor) => ({ isDragging: monitor.isDragging() }),
   });
 
-  // Drop target ONLY for pull tasks: accept empties
-  const isPull = (task.type || '').toLowerCase() === TASK_TYPES.PULL;
+  // Drop (only on PULL accepts EMPTY)
+  const isPull =
+    String(task?.type || "").toLowerCase() ===
+    String(TASK_TYPES.PULL || "pull").toLowerCase();
+
   let dropRef = null;
   let dropState = {};
   if (isPull) {
-    // Only allow empties to be dropped here
     const [dropCollected, drop] = useDrop({
-      accept: [TASK_TYPES.EMPTY],
-      drop: (item, monitor) => {
-        if (onDropEmpty) onDropEmpty(item.task, task); // item.task is the empty, task is the pull
-      },
+      accept: [String(TASK_TYPES.EMPTY || "empty").toLowerCase()],
+      drop: (item) => onDropEmpty && onDropEmpty(item.task, task),
       collect: (monitor) => ({
         isOver: monitor.isOver(),
         canDrop: monitor.canDrop(),
@@ -49,6 +47,7 @@ function TaskCard({
     dropState = dropCollected;
   }
 
+  // Tooltip timing
   const handleMouseEnter = () => {
     tooltipTimeout.current = setTimeout(() => setShowTooltip(true), 3000);
   };
@@ -56,63 +55,68 @@ function TaskCard({
     clearTimeout(tooltipTimeout.current);
     setShowTooltip(false);
   };
-
-  // Hide tooltip instantly if dragging starts (reacts to drag state change)
-  React.useEffect(() => {
+  useEffect(() => {
     if (isDragging) {
       clearTimeout(tooltipTimeout.current);
       setShowTooltip(false);
     }
   }, [isDragging]);
 
-  const handleCopy = (e) => {
+  // Copy trailer -> toast
+  const handleCopy = async (e) => {
     e.stopPropagation();
-    if (task.trailer) {
-      navigator.clipboard.writeText(task.trailer);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1000);
+    const txt = String(task?.trailer || "").trim();
+    if (!txt) return;
+    try {
+      await navigator.clipboard.writeText(txt);
+      toast.push(`Copied trailer ${txt}`, "success");
+    } catch {
+      toast.push("Copy failed", "error");
     }
   };
 
+  // Lock toggle
   const handleLockToggle = (e) => {
     e.stopPropagation();
     const newLocked = !locked;
     setLocked(newLocked);
-    if (typeof onLockToggle === "function") {
-      onLockToggle(task, newLocked);
-    }
+    if (typeof onLockToggle === "function") onLockToggle(task, newLocked);
   };
 
-  const isPending = !!task.pending;
+  // Status badge (supports old `pending` boolean and new `status` string)
+  const statusRaw = String(
+    task?.status ?? (task?.pending ? "pending" : "")
+  ).toLowerCase();
+  const isCompleted = statusRaw === "completed";
+  const isPending = statusRaw === "pending" || (!statusRaw && !isCompleted);
+  const statusLabel = isCompleted ? "COMPLETED" : "PENDING";
 
-  // Tooltip content (customize as needed)
-  const tooltipContent = (
-    <div className="task-tooltip">
-      <div><strong>Task ID:</strong> {task.id}</div>
-      <div><strong>Type:</strong> {task.type}</div>
-      <div><strong>Trailer:</strong> {task.trailer}</div>
-      {task.door && <div><strong>Door:</strong> {task.door}</div>}
-      {task.zoneType && <div><strong>Zone:</strong> {task.zoneType}</div>}
-      {task.zoneLocation && <div><strong>Location:</strong> {task.zoneLocation}</div>}
-      {task.priority && <div><strong>Priority:</strong> {task.priority}</div>}
-      {task.note && <div><strong>Note:</strong> {task.note}</div>}
-    </div>
-  );
-
-  // Compose refs (drag always, drop only for pull task)
-  // If both drag and drop, make sure both refs are applied
   const cardRef = (node) => {
     if (isDraggable && drag) drag(node);
     if (dropRef) dropRef(node);
   };
 
-  // Highlight if a draggable empty is over this pull task
   const dropHighlight = isPull && dropState.isOver && dropState.canDrop;
+
+  const tooltipContent = (
+    <div className="task-tooltip">
+      <div><strong>Task ID:</strong> {task?.id}</div>
+      <div><strong>Type:</strong> {task?.type}</div>
+      <div><strong>Trailer:</strong> {task?.trailer}</div>
+      {task?.door && <div><strong>Door:</strong> {task.door}</div>}
+      {task?.zoneType && <div><strong>Zone:</strong> {task.zoneType}</div>}
+      {task?.zoneLocation && <div><strong>Location:</strong> {task.zoneLocation}</div>}
+      {task?.priority && <div><strong>Priority:</strong> {task.priority}</div>}
+      {task?.note && <div><strong>Note:</strong> {task.note}</div>}
+      {(statusRaw || isPending) && <div><strong>Status:</strong> {statusLabel}</div>}
+      {typeof task?.locked === "boolean" && <div><strong>Locked:</strong> {locked ? "Yes" : "No"}</div>}
+    </div>
+  );
 
   return (
     <div
       ref={cardRef}
-      className={`task-card side-icons-layout${isPull ? ' pull-drop-target' : ''}${dropHighlight ? ' highlight-drop' : ''}`}
+      className={`task-card side-icons-layout${isPull ? " pull-drop-target" : ""}${dropHighlight ? " highlight-drop" : ""}${isCompleted ? " is-completed" : ""}`}
       style={{
         opacity: isDragging ? 0.5 : 1,
         cursor: isDraggable ? "grab" : "default",
@@ -128,27 +132,23 @@ function TaskCard({
           {locked ? <FaLock /> : <FaLockOpen />}
         </button>
       </div>
+
       <div className="task-main-content">
-        <div className="task-main-label">
-          <span>{task.trailer} {task.door && `(${task.door})`}</span>
+        <div className="task-main-label" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span>{task?.trailer} {task?.door && `(${task.door})`}</span>
+          <span className={`task-status ${isCompleted ? "completed" : "pending"}`}>{statusLabel}</span>
         </div>
-        {isPending && (
-          <div className="pending-badge">PENDING</div>
-        )}
       </div>
+
       <div className="side-icon right">
         <button className="copy-btn" onClick={handleCopy} title="Copy trailer number">
           <FaCopy />
         </button>
-        {copied && <span className="copied-tooltip">Copied!</span>}
       </div>
+
       {showTooltip && !isDragging && (
-        <div className="task-tooltip-popup">
-          {tooltipContent}
-        </div>
+        <div className="task-tooltip-popup">{tooltipContent}</div>
       )}
     </div>
   );
 }
-
-export default TaskCard;

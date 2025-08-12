@@ -9,6 +9,7 @@ from backend.pega.yard_coordinator.session_manager.manager import PegaTaskSessio
 from backend.modules.storage import set_latest_poll_result, cleanup_expired_tasks
 from backend.rules.validation import validate_and_store_tasks
 from enum import Enum, auto
+from backend.modules.tasks_hub import tasks_hub  # WS hub broadcaster
 
 logger = setup_logger()
 load_dotenv()
@@ -93,16 +94,23 @@ class PegaTaskPoller:
                 unwanted_count = len(all_task_dicts) - len(valid_tasks)
 
                 try:
-                    # 5. Store only valid tasks in Redis
-                    await set_latest_poll_result(
-                        [t.model_dump() if hasattr(t, "model_dump") else t for t in valid_tasks],
-                        self.redis
-                    )
+                    # 5. Store only valid tasks in Redis AND broadcast over WS (same snapshot)
+                    serialized_tasks = [
+                        t.model_dump() if hasattr(t, "model_dump") else t
+                    for t in valid_tasks
+                    ]
+                    await set_latest_poll_result(serialized_tasks, self.redis)
+
+                    # ---> WS push (no Pub/Sub; single-process)
+                    await tasks_hub.set_snapshot(serialized_tasks)
+
+                    # Optional custom handler
                     if self.handle_payload is not None:
                         await self.handle_payload(valid_tasks, self.redis)
+
                 except Exception as e:
-                    logger.error(f"Error storing valid tasks in Redis: {e}")
-                    raise PollingError("Failed to store valid tasks in Redis.") from e
+                    logger.error(f"Error storing/broadcasting valid tasks: {e}")
+                    raise PollingError("Failed to store or broadcast valid tasks.") from e
 
                 try:
                     # 6. Log counts

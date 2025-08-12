@@ -1,3 +1,5 @@
+from enum import Enum
+
 from pydantic import BaseModel
 from typing import List, Optional, Dict
 
@@ -14,3 +16,14 @@ class Hostler(BaseModel):
 class PollResult(BaseModel):
     workbasket_tasks: List[Task]
     hostlers: Dict[str, Hostler]
+
+
+class ReCreateHostler(BaseModel):
+    checker_id: Optional[str]
+    hostler_name: Optional[str]
+    password: str = "123456"
+
+
+class LoginError(Exception):
+    """Raised when login fails."""
+    pass

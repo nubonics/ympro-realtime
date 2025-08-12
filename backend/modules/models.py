@@ -5,13 +5,17 @@ from pydantic import BaseModel, Field
 class PullTask(BaseModel):
     case_id: str
     yard_task_type: Literal["pull"] = "pull"
-    trailer: str
+    trailer: Optional[str] = None
     assigned_to: Optional[str] = None
-    door: int
+    door: Optional[int] = None
     zoneType: Optional[str] = None
     zoneLocation: Optional[str] = None
     note: Optional[str] = None
     priority: str = "normal"
+    created_by: Optional[str] = None
+    updated_by: Optional[str] = None
+    resolved_by: Optional[str] = None
+    case_status: Optional[str] = "PENDING"
     # --- Grid context fields ---
     row_page: Optional[str] = None
     base_ref: Optional[str] = None
@@ -33,13 +37,17 @@ class PullTask(BaseModel):
 class BringTask(BaseModel):
     case_id: str
     yard_task_type: Literal["bring"] = "bring"
-    trailer: str
+    trailer: Optional[str] = None
     assigned_to: Optional[str] = None
-    door: int
+    door: Optional[int] = None
     zoneType: Optional[str] = None
     zoneLocation: Optional[str] = None
     note: Optional[str] = None
     priority: str = "normal"
+    created_by: Optional[str] = None
+    updated_by: Optional[str] = None
+    resolved_by: Optional[str] = None
+    case_status: Optional[str] = "PENDING"
     # --- Grid context fields ---
     row_page: Optional[str] = None
     base_ref: Optional[str] = None
@@ -61,7 +69,7 @@ class BringTask(BaseModel):
 class HookTask(BaseModel):
     case_id: str
     yard_task_type: Literal["hook"] = "hook"
-    trailer: str
+    trailer: Optional[str] = None
     assigned_to: Optional[str] = None
     leadTrailer: Optional[str] = None
     leadDoor: Optional[int] = None
@@ -73,6 +81,10 @@ class HookTask(BaseModel):
     dolly2: Optional[int] = None
     note: Optional[str] = None
     priority: str = "normal"
+    created_by: Optional[str] = None
+    updated_by: Optional[str] = None
+    resolved_by: Optional[str] = None
+    case_status: Optional[str] = "PENDING"
     # --- Grid context fields ---
     row_page: Optional[str] = None
     base_ref: Optional[str] = None
@@ -103,22 +115,41 @@ class DeleteTaskRequest(BaseModel):
 
 class CreateTaskRequest(BaseModel):
     yard_task_type: str
-    trailer: str  # Required
+    trailer: Optional[str] = None
     assigned_to: Optional[str] = None
-    door: Optional[str] = None
+    door: Optional[int] = None
+    created_by: Optional[str] = None
+    updated_by: Optional[str] = None
+    resolved_by: Optional[str] = None
     # hostler: Optional[str] = None
-    status: Optional[str] = "PENDING"
+    case_status: Optional[str] = "PENDING"
     locked: Optional[bool] = False
     general_note: Optional[str] = ""
     priority: Optional[str] = "normal"
 
 
-# OUTDATED
-class TransferTaskRequest(BaseModel):
+# # OUTDATED
+# class TransferTaskRequest(BaseModel):
+#     case_id: str
+#     assigned_to: Optional[str] = None
+#
+#
+# class TransferRequest(BaseModel):
+#     case_id: str
+#     assigned_to: str
+
+
+class TransferTaskResponse(BaseModel):
+    success: bool
     case_id: str
     assigned_to: Optional[str] = None
+    method: str
+    error: Optional[str] = None
+    created_by: Optional[str] = None
+    updated_by: Optional[str] = None
+    resolved_by: Optional[str] = None
+    case_status: Optional[str] = "PENDING"
 
 
-class TransferRequest(BaseModel):
+class OpenCase(BaseModel):
     case_id: str
-    assigned_to: str

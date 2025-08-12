@@ -2,19 +2,22 @@ from .hostler_utils import (
     extract_total_pages_lxml,
     extract_section_id,
     extract_pagelist_property,
-    build_location_params,
-    extract_team_members_pd_key,
-    extract_context_page,
-    extract_str_index_list,
-    extract_first_pzuiactionzzz,
+    build_location_params, extract_context_page,
 )
-from .session_manager.pega_parser import extract_hostler_view_details
+from .session_manager.debug import save_html_to_file
+from .session_manager.pega_parser import (
+    extract_hostler_view_details,
+    extract_grid_action_fields, get_row_page, extract_str_index_in_list,
+    extract_team_members_pd_key,  # <-- use these!
+)
 from ...modules.colored_logger import setup_logger
 from ...rules.validation import validate_and_store_tasks
 import math
 import json
 
 logger = setup_logger(__name__)
+
+raw_html = ''
 
 
 async def fetch_hostler_details(session_manager, base_ref, page_size=10, step1_grid_action=False):
@@ -26,14 +29,16 @@ async def fetch_hostler_details(session_manager, base_ref, page_size=10, step1_g
     else:
         raise ValueError("Invalid step1_grid_action value, must be True or False.")
 
+    row_page = get_row_page(base_ref)
+    logger.debug(f'fetch_hostler_details row_page: {row_page}')
+
     # --- Extract checker_id from base_ref or another context ---
     checker_id = None
-    # Try to get checker_id from hostler_store using base_ref, or pass checker_id as a param for clarity.
 
     # --- Get total moves from Redis ---
     total_moves = None
     if checker_id:
-        hostler_info = await session_manager.task_store.get_hostler(f"hostler:{checker_id}")
+        hostler_info = await session_manager.hostler_store.get_hostler(f"hostler:{checker_id}")
         if hostler_info:
             try:
                 hostler_info = json.loads(hostler_info)
@@ -45,9 +50,9 @@ async def fetch_hostler_details(session_manager, base_ref, page_size=10, step1_g
     location_params_str = build_location_params(base_ref, session_manager.pzHarnessID)
     data = {
         "pyActivity": "pzRunActionWrapper",
-        "rowPage": base_ref,
+        "rowPage": row_page,
         "Location": location_params_str,
-        "PagesToCopy": base_ref.split(".pxResults")[0],
+        "PagesToCopy": row_page,
         "pzHarnessID": session_manager.pzHarnessID,
         "UITemplatingStatus": "N",
         "inStandardsMode": "true",
@@ -63,10 +68,11 @@ async def fetch_hostler_details(session_manager, base_ref, page_size=10, step1_g
         params=session_manager.get_standard_params(),
         follow_redirects=True
     )
+    global raw_html
+    raw_html = response.text
     logger.debug(f'1st fetch_hostler_details response status: {response.status_code}, html_step#: {html_step}')
-    if getattr(session_manager, "save_html_to_file", None):
-        session_manager.save_html_to_file(response.content, step=html_step,
-                                          enabled=getattr(session_manager, "debug_html", False))
+    if 'jessica' in raw_html.lower():
+        save_html_to_file(response.content, step=html_step, enabled=session_manager.debug_html)
     html_step += 1
 
     hostler_details = extract_hostler_view_details(response.text) or {}
@@ -77,7 +83,7 @@ async def fetch_hostler_details(session_manager, base_ref, page_size=10, step1_g
     if checker_id is None and hasattr(session_manager, "hostler_store"):
         checker_id = await session_manager.hostler_store.lookup_checker_id(hostler_name)
         if checker_id:
-            hostler_info = await session_manager.task_store.get_hostler(f"hostler:{checker_id}")
+            hostler_info = await session_manager.hostler_store.get_hostler(f"hostler:{checker_id}")
             if hostler_info:
                 try:
                     hostler_info = json.loads(hostler_info)
@@ -85,26 +91,33 @@ async def fetch_hostler_details(session_manager, base_ref, page_size=10, step1_g
                 except Exception as e:
                     logger.warning(f"Failed to parse hostler_info JSON for {checker_id}: {e}")
 
-    # Gather all transfer-relevant fields:
-    fetch_worklist_pd_key = hostler_details.get("fetch_worklist_pd_key") or base_ref.split(".pxResults")[0]
-    team_members_pd_key = extract_team_members_pd_key(html_text=response.text)
+    # --- Assignment grid fields for Step 2 payload ---
+    grid_fields = extract_grid_action_fields(response.text)
+    selected_row_id = grid_fields.get("selected_row_id")
+    pyPropertyTarget = grid_fields.get("pyPropertyTarget")
+    base_ref_step2 = grid_fields.get("base_ref")
+    context_page = grid_fields.get("context_page")
+    pzuiactionzzz = grid_fields.get("pzuiactionzzz")
+    pzHarnessID = grid_fields.get("pzHarnessID")
+
     section_id_list = extract_section_id(response.text, default=getattr(session_manager, "sectionIDList", None))
-    pzuiactionzzz = extract_first_pzuiactionzzz(html_text=response.text)
-    row_page = base_ref
-    context_page = extract_context_page(html_text=response.text)
-    strIndexInList = extract_str_index_list(html_text=response.text)
+    strIndexInList = extract_str_index_in_list(response.text) or None
+    team_members_pd_key = extract_team_members_pd_key(response.text) or None
+    context_page_extracted = extract_context_page(response.text) or context_page
+
     activity_params = None  # Will be set in the loop
 
     # --- Add context fields to first page tasks ---
     for t in tasks:
-        t["fetch_worklist_pd_key"] = fetch_worklist_pd_key
-        t["team_members_pd_key"] = team_members_pd_key
-        t["section_id_list"] = section_id_list
+        t["selected_row_id"] = selected_row_id
+        t["pyPropertyTarget"] = pyPropertyTarget
+        t["base_ref"] = base_ref_step2
+        t["context_page"] = context_page_extracted
         t["pzuiactionzzz"] = pzuiactionzzz
-        t["row_page"] = row_page
-        t["base_ref"] = base_ref
-        t["context_page"] = context_page
+        t["pzHarnessID"] = pzHarnessID
+        t["section_id_list"] = section_id_list
         t["strIndexInList"] = strIndexInList
+        t["team_members_pd_key"] = team_members_pd_key
         t["activity_params"] = activity_params
     all_tasks.extend(tasks)
 
@@ -128,6 +141,7 @@ async def fetch_hostler_details(session_manager, base_ref, page_size=10, step1_g
     # --- Pages 2..N (short-circuit if only one page) ---
     if total_pages > 1:
         for page in range(2, total_pages + 1):
+            row_page = get_row_page(base_ref, page_index=page)
             start_index = (page - 1) * page_size + 1
             prev_start_index = (page - 2) * page_size + 1
             activity_params = (
@@ -149,6 +163,7 @@ async def fetch_hostler_details(session_manager, base_ref, page_size=10, step1_g
                 "$PDeclare_pyDisplay$ppyDCDisplayState$ppyActiveDocumentType": "HOME",
                 "ActivityParams": activity_params,
                 "BaseReference": base_ref,
+                "rowPage": row_page,
                 "ReadOnly": "0",
                 "Increment": "true",
                 "UITemplatingStatus": "N",
@@ -163,23 +178,25 @@ async def fetch_hostler_details(session_manager, base_ref, page_size=10, step1_g
                 params=session_manager.get_standard_params(),
                 follow_redirects=True
             )
-            if getattr(session_manager, "save_html_to_file", None):
-                session_manager.save_html_to_file(response.content, step=html_step,
-                                                  enabled=getattr(session_manager, "debug_html", False))
+            save_html_to_file(response.content, step=html_step, enabled=session_manager.debug_html)
             html_step += 1
 
             hostler_details = extract_hostler_view_details(response.text) or {}
             tasks = hostler_details.get("tasks", []) or []
             # Enrich each task with context for this page
+            strIndexInList = extract_str_index_in_list(response.text) or None
+            team_members_pd_key = extract_team_members_pd_key(response.text) or team_members_pd_key
+            context_page_extracted = extract_context_page(response.text) or context_page
             for t in tasks:
-                t["fetch_worklist_pd_key"] = fetch_worklist_pd_key
-                t["team_members_pd_key"] = team_members_pd_key
-                t["section_id_list"] = section_id_list
+                t["selected_row_id"] = selected_row_id
+                t["pyPropertyTarget"] = pyPropertyTarget
+                t["base_ref"] = base_ref_step2
+                t["context_page"] = context_page_extracted
                 t["pzuiactionzzz"] = pzuiactionzzz
-                t["row_page"] = row_page
-                t["base_ref"] = base_ref
-                t["context_page"] = context_page
+                t["pzHarnessID"] = pzHarnessID
+                t["section_id_list"] = section_id_list
                 t["strIndexInList"] = strIndexInList
+                t["team_members_pd_key"] = team_members_pd_key
                 t["activity_params"] = activity_params
             all_tasks.extend(tasks)
             # Always update for next page (if needed)
@@ -201,17 +218,25 @@ async def fetch_hostler_details(session_manager, base_ref, page_size=10, step1_g
         })
 
     # --- Return all transfer-related fields along with tasks ---
-    return {
+    result = {
         "id": f"detail_{base_ref}",
         "name": hostler_name,
         "tasks": [task.model_dump() for task in validated_tasks],
-        "fetch_worklist_pd_key": fetch_worklist_pd_key,
-        "team_members_pd_key": team_members_pd_key,
-        "section_id_list": section_id_list,
+        "selected_row_id": selected_row_id,
+        "pyPropertyTarget": pyPropertyTarget,
+        "base_ref": base_ref_step2,
+        "context_page": context_page_extracted,
         "pzuiactionzzz": pzuiactionzzz,
-        "row_page": row_page,
-        "base_ref": base_ref,
-        "context_page": context_page,
+        "pzHarnessID": pzHarnessID,
+        "section_id_list": section_id_list,
         "strIndexInList": strIndexInList,
+        "team_members_pd_key": team_members_pd_key,
         "activity_params": activity_params,
     }
+    # Only include raw_html if step1_grid_action is True
+    if step1_grid_action:
+        result["raw_html"] = response.text
+
+    # logger.info(f'result: {result}')
+    logger.info(f"Hostler {hostler_name} extracted tasks: {tasks}")
+    return result

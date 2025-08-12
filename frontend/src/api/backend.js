@@ -3,7 +3,7 @@
 import axios from "axios";
 
 const API = axios.create({
-  baseURL: "http://localhost:8052/api", // Change this to your FastAPI endpoint
+  baseURL: "http://localhost:8000/api", // Change this to your FastAPI endpoint
 });
 
 // Example functions:

@@ -1,0 +1,40 @@
+/* src/components/ui/toast.css */
+.toast-container {
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 9999;
+}
+.toast {
+  min-width: 200px;
+  max-width: 360px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(0,0,0,.18);
+  background: #1f2937;
+  color: #fff;
+  font-size: 14px;
+  opacity: 0;
+  transform: translateY(-6px);
+  animation: toast-in .24s ease forwards;
+}
+.toast-success { background: #065f46; } /* emerald-ish */
+.toast-error { background: #991b1b; }   /* red-ish */
+@keyframes toast-in {
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Task status badges */
+.task-status {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+.task-status.pending { background: #fef3c7; color: #92400e; }   /* amber */
+.task-status.completed { background: #dcfce7; color: #166534; } /* green */
+.task-card.is-completed { opacity: .65; }

@@ -1,14 +1,17 @@
 import datetime
+import json
 import re
 import time
 import urllib
+from urllib.parse import unquote
 
 import xxhash
 from dateparser import parse as date_parse
 from lxml import html
 
 from backend.modules.colored_logger import setup_logger
-from backend.rules.custom_checks import check_preventative_maintenance
+from backend.pega.yard_coordinator.session_manager.hostler_utils import extract_team_members_pd_key
+
 
 logger = setup_logger(__name__)
 
@@ -68,6 +71,24 @@ def parse_html(html_content: str):
         return html.fromstring(html_content)
     except Exception:
         return None
+
+
+# --- Extract pzuiactionzzz (prefer grid selection token, fallback to button) ---
+def extract_pzuiactionzzz_for_xfer_hostler_to_wb(html_text):
+    # 1. Try data-postvalue-url (grid selection)
+    tree = html.fromstring(html_text)
+    for el in tree.xpath("//*[contains(@data-postvalue-url, 'pzuiactionzzz=')]"):
+        val = el.attrib.get('data-postvalue-url') or ""
+        match = re.search(r'pzuiactionzzz=([A-Za-z0-9%*=]+)', val)
+        if match:
+            return match.group(1)
+    # 2. Fallback to first button with data-click (modal actions)
+    for el in tree.xpath("//button[contains(@data-click, 'pzuiactionzzz=')]"):
+        data_click = el.attrib.get('data-click') or ""
+        match = re.search(r'pzuiactionzzz=([A-Za-z0-9%*=]+)', data_click)
+        if match:
+            return match.group(1)
+    return None
 
 
 def extract_pzuiactionzzz(html_text: str) -> str | None:
@@ -158,8 +179,11 @@ def extract_hostler_view_details(html_content):
                 yard_task_type = 'hook'
             elif 'prevent' in yard_task_type.lower() or 'maintenance' in yard_task_type.lower():
                 yard_task_type = 'preventive_maintenance'
+            elif 'yard chat' in yard_task_type.lower():
+                yard_task_type = 'yard_chat'
             else:
-                raise Exception(f'Unknown yard task type: {yard_task_type} for case {case_id}\nextract_hostler_view_details')
+                raise Exception(
+                    f'Unknown yard task type: {yard_task_type} for case {case_id}\nextract_hostler_view_details')
             create_date_elements = row.xpath(".//td[@data-attribute-name='Create Date']")
             create_date_str = create_date_elements[0].text_content().strip() if create_date_elements else ""
             try:
@@ -218,6 +242,8 @@ def extract_workbasket_tasks(html_content: str, assigned_to: str = "workbasket")
             yard_task_type = 'hook'
         elif 'prevent' in yard_task_type.lower() or 'maintenance' in yard_task_type.lower():
             yard_task_type = 'preventive_maintenance'
+        elif 'yard chat' in yard_task_type.lower():
+            yard_task_type = 'yard_chat'
         else:
             raise Exception(
                 f'Unknown yard task type: {yard_task_type} for case {case_id}\nextract_workbasket_tasks')
@@ -269,3 +295,308 @@ def extract_session_data(html_content: str):
         "pzHarnessID": pzHarnessID,
         "pzTransactionId": pzTransactionId,  # <-- NEW
     }
+
+
+def get_pzTransactionId_for_create_task(html_content: str) -> str | None:
+    tree = parse_html(html_content)
+    xpath_expr = "//script[contains(text(), 'pega.ui.jittemplate.addMetadataTree')]"
+    script_elements = tree.xpath(xpath_expr)
+    if not script_elements:
+        return None
+    script_text = script_elements[0].text
+    if not script_text:
+        return None
+    match = re.search(r"pzTransactionId=([^&\"\s]+)", script_text)
+    return match.group(1) if match else None
+
+
+def get_PD_pzRenderFeedContext_for_create_task(html_content: str) -> str | None:
+    tree = parse_html(html_content)
+    xpath_expr = "//input[contains(@name, 'PD_pzRenderFeedContext')]"
+    input_elements = tree.xpath(xpath_expr)
+    if not input_elements:
+        return None
+    name_attr = input_elements[0].get("name")
+    match = re.search(r"(\$PD_pzRenderFeedContext_[^$]+)", name_attr)
+    return match.group(1) if match else None
+
+
+def get_PD_pzFeedParams_for_create_task(html_content: str) -> str | None:
+    tree = parse_html(html_content)
+    xpath_expr = "//div[@id='AJAXCT']"
+    div_elements = tree.xpath(xpath_expr)
+    if not div_elements:
+        return None
+    data_json = div_elements[0].get("data-json")
+    if not data_json:
+        return None
+    try:
+        data = json.loads(data_json)
+    except Exception:
+        return None
+    initial = data.get("Initial", {})
+    for key in initial:
+        if key.startswith("D_pzFeedParams"):
+            return key.replace("D_", "PD_", 1)
+    return None
+
+
+def extract_pzuiactionzzz_for_create_task(html_content: str) -> str | None:
+    tree = parse_html(html_content)
+    if tree is None:
+        return None
+    xpath_expr = "//script[contains(text(), '$pxActionString') and contains(text(), 'pzuiactionzzz')]"
+    script_elements = tree.xpath(xpath_expr)
+    for script in script_elements:
+        script_text = script.text_content()
+        match = re.search(r'pzuiactionzzz\\u003d([^"]+)', script_text)
+        if match:
+            return urllib.parse.unquote(match.group(1))
+    return None
+
+
+def get_row_page(base_ref, page_index=None):
+    """
+    Returns the row_page for a paginated request.
+    If page_index is None, returns the root.
+    If page_index is given, appends .pxResults(N)
+    """
+    root = re.sub(r"\.pxResults\(\d+\)$", "", base_ref)
+    if page_index and page_index > 1:
+        return f"{root}.pxResults({page_index})"
+    return root
+
+
+def extract_grid_action_fields(html_text):
+    tree = html.fromstring(html_text)
+
+    # 1. selected_row_id (assignment row)
+    selected_tr = tree.xpath("//tr[contains(@id, '$PD_FetchWorkListAssignments_') and contains(@id, '$ppxResults$l')]")
+    selected_row_id = selected_tr[0].get("id") if selected_tr else None
+
+    # 2. pyPropertyTarget (assignment row)
+    pyprop_input = tree.xpath(
+        "//input[@type='checkbox' and contains(@name, '$PD_FetchWorkListAssignments_') and contains(@name, '$ppxResults') and contains(@name, '$ppySelected')]")
+    pyPropertyTarget = pyprop_input[0].get("name") if pyprop_input else None
+
+    # 3. base_ref (hostler-level, prefer base_ref, fallback prim_page)
+    base_ref = None
+    base_ref_elems = tree.xpath("//*[@name='base_ref' and @base_ref]")
+    for elem in base_ref_elems:
+        val = elem.get("base_ref")
+        if val and val.strip():
+            base_ref = val.strip()
+            break
+    if not base_ref:
+        base_ref_elems = tree.xpath("//*[@base_ref]")
+        for elem in base_ref_elems:
+            val = elem.get("base_ref")
+            if val and val.strip():
+                base_ref = val.strip()
+                break
+    if not base_ref:
+        prim_page_elems = tree.xpath("//*[@prim_page]")
+        for elem in prim_page_elems:
+            val = elem.get("prim_page")
+            if val and val.strip():
+                base_ref = val.strip()
+                break
+
+    # 4. context_page (from hashed-dp-page)
+    context_elem = tree.xpath("//*[@hashed-dp-page]")
+    context_page = None
+    if context_elem:
+        page = context_elem[0].get("hashed-dp-page")
+        if page:
+            context_page = f"{page}(1)"
+    else:
+        ds_elem = tree.xpath("//*[@dataSource]")
+        for elem in ds_elem:
+            ds = elem.get("dataSource", "")
+            m = re.search(r'(D_FetchWorkListAssignments_[^\.]+)\.pxResults', ds)
+            if m:
+                context_page = f"{m.group(1)}.pxResults(1)"
+                break
+
+    # 5. pzuiactionzzz
+    postval_div = tree.xpath("//div[@data-postvalue-url]")
+    pzuiactionzzz = None
+    if postval_div:
+        urlval = postval_div[0].get("data-postvalue-url")
+        m = re.search(r"pzuiactionzzz=([^&]+)", urlval)
+        if m:
+            pzuiactionzzz = unquote(m.group(1))
+
+    # 6. pzHarnessID (not present in sample, but search for id starting with HID)
+    hid_elem = tree.xpath("//*[starts-with(@id, 'HID')]")
+    pzHarnessID = hid_elem[0].get("id") if hid_elem else None
+
+    # 7. row_page (derived from base_ref)
+    row_page = get_row_page(base_ref) if base_ref else None
+
+    # 8. fetch_worklist_pd_key (new integration)
+    fetch_worklist_pd_key = extract_fetch_worklist_pd_key(html_text)
+
+    # 9. team_members_pd_key
+    team_members_pd_key = extract_team_members_pd_key(html_text)
+
+    # 10. strIndexInList
+    strIndexInList = extract_str_index_in_list(html_text)
+
+    return {
+        "selected_row_id": selected_row_id,
+        "pyPropertyTarget": pyPropertyTarget,
+        "base_ref": base_ref,
+        "context_page": context_page,
+        "pzuiactionzzz": pzuiactionzzz,
+        "pzHarnessID": pzHarnessID,
+        "row_page": row_page,
+        "fetch_worklist_pd_key": fetch_worklist_pd_key,
+        "team_members_pd_key": team_members_pd_key,
+        "strIndexInList": strIndexInList,
+    }
+
+
+def extract_str_index_in_list(html_text):
+    """
+    Extracts the strIndexInList value from the grid row.
+    Typically this is found as PL_INDEX, index, or a similar attribute on the <tr> for the assignment.
+    Returns the first found value as a string, or None if not found.
+    """
+    tree = html.fromstring(html_text)
+    # Find the main grid assignment row (usually contains OAArgs, PL_INDEX, etc.)
+    tr = tree.xpath("//tr[contains(@class, 'cellCont') and (@PL_INDEX or @pl_index or @index)]")
+    for elem in tr:
+        idx = elem.get("PL_INDEX") or elem.get("pl_index") or elem.get("index")
+        if idx is not None:
+            return str(idx)
+    # Fallback: try to extract from the id if it encodes the index (e.g., $ppxResults$l12)
+    rows = tree.xpath("//tr[contains(@id, '$ppxResults$l')]")
+    if rows:
+        m = re.search(r"\$ppxResults\$l(\d+)", rows[0].get("id", ""))
+        if m:
+            return m.group(1)
+    return None
+
+
+def extract_fetch_worklist_pd_key(html_text):
+    from lxml import html
+    tree = html.fromstring(html_text)
+    # Look for a grid table with PL_PROP attribute
+    table = tree.xpath("//table[@PL_PROP]")
+    if table:
+        return table[0].attrib.get("PL_PROP")
+    # Fallback: regex
+    import re
+    m = re.search(r"PL_PROP=['\"]([^'\"]+)['\"]", html_text)
+    if m:
+        return m.group(1)
+    return None
+
+
+def extract_task_fields_from_html(html: str):
+    """
+    Extracts fields from mergeBigData JSON in HTML <script> blocks.
+    Returns a dict of relevant fields, or raises ValueError if not found.
+
+    - created_by: $pxCreateOpName$pyButtonLabel
+    - updated_by: last event in history with "$pyMessageKey$pyCaption" == "Task details manually updated"
+    - updated_by_timestamp: from that event
+    - resolved_by: event with "$pyMessageKey$pyCaption" starting with "Status changed to "
+    - resolved_by_status: status string from that event
+    - resolved_by_timestamp: from that event
+    - case_status: $$pyStatusWork$pyCaption
+    """
+    # Patterns for simple string fields (fallbacks)
+    create_op_pattern = r'\$pxCreateOpName\$pyButtonLabel"\s*:\s*"([^"]*)"'
+    create_op_match = re.search(create_op_pattern, html)
+    create_op_value = create_op_match.group(1) if create_op_match else None
+
+    # Pattern for $$pyStatusWork$pyCaption
+    status_work_pattern = r'\$\$pyStatusWork\$pyCaption"\s*:\s*"([^"]*)"'
+    status_work_match = re.search(status_work_pattern, html)
+    status_work_value = status_work_match.group(1) if status_work_match else None
+
+    # Try to extract mergeBigData JSON from a <script> block
+    for m in re.finditer(r"<script[^>]*>(.*?)</script>", html, re.DOTALL | re.MULTILINE):
+        script_text = m.group(1)
+        if "mergeBigData" in script_text:
+            # Find the start of the mergeBigData call
+            call_start = script_text.find("mergeBigData(")
+            if call_start == -1:
+                continue
+            # Find the first '{' after mergeBigData(
+            json_start = script_text.find('{', call_start)
+            # Find the matching '})' or '});'
+            # We'll look for the last '}' before ')'
+            paren_close = script_text.find(')', json_start)
+            brace_close = script_text.rfind('}', json_start, paren_close if paren_close != -1 else None)
+            if json_start == -1 or brace_close == -1:
+                continue
+            data_json = script_text[json_start:brace_close + 1]
+            try:
+                data = json.loads(data_json)
+            except Exception as e:
+                raise ValueError(f"Failed to parse JSON from mergeBigData: {e}")
+
+            # Main pyWorkPage extraction
+            pywork = data.get("pyWorkPage", {})
+            meta = pywork.get("MetaData", {})
+
+            # Try to find a history list anywhere in the data (recursively)
+            def find_history_list(obj):
+                if isinstance(obj, list):
+                    if obj and isinstance(obj[0], dict) and "pyPerformer" in obj[0] and "pxTimeCreated" in obj[0]:
+                        return obj
+                    for item in obj:
+                        found = find_history_list(item)
+                        if found:
+                            return found
+                elif isinstance(obj, dict):
+                    for v in obj.values():
+                        found = find_history_list(v)
+                        if found:
+                            return found
+                return None
+
+            history_list = find_history_list(data)
+
+            # Find updated_by (last event with "$pyMessageKey$pyCaption" == "Task details manually updated")
+            updated_by_event = None
+            resolved_by_event = None
+            if history_list:
+                for event in history_list:
+                    msg = event.get("$pxLocalized", {}).get("$pyMessageKey$pyCaption", "")
+                    if msg == "Task details manually updated":
+                        updated_by_event = event  # keep overwriting to get the last
+                    elif msg.startswith("Status changed to "):
+                        resolved_by_event = event  # (should only be one)
+
+            # Compose outputs
+            out = {
+                "jockey_comments": pywork.get("Comments", ""),
+                "drop_door": meta.get("DropDoor", ""),
+                "trailer_type": meta.get("TrailerType", ""),
+                "drop_off_zone": meta.get("ZoneTrailer", ""),
+                "general_note": meta.get("pyDescription", ""),
+                "created_by": create_op_value,
+                "case_status": status_work_value,
+                # History events:
+                "updated_by": None,
+                "updated_by_timestamp": None,
+                "resolved_by": None,
+                "resolved_by_status": None,
+                "resolved_by_timestamp": None,
+            }
+            if updated_by_event:
+                out["updated_by"] = updated_by_event.get("pyPerformer")
+                out["updated_by_timestamp"] = updated_by_event.get("pxTimeCreated")
+            if resolved_by_event:
+                out["resolved_by"] = resolved_by_event.get("pyPerformer")
+                msg = resolved_by_event.get("$pxLocalized", {}).get("$pyMessageKey$pyCaption", "")
+                # Extract status string
+                status = msg.replace("Status changed to ", "").rstrip(".")
+                out["resolved_by_status"] = status
+                out["resolved_by_timestamp"] = resolved_by_event.get("pxTimeCreated")
+            return out
+    raise ValueError("Could not find mergeBigData JSON in any <script> block in HTML")

@@ -9,6 +9,7 @@ from backend.rules.helper import get_attr
 ALLOWED_TYPES = {"pull", "bring", "hook"}
 logger = setup_logger(__name__)
 TaskAdapter = TypeAdapter(Task)
+_deleting_ids = set()
 
 
 def passes_business_rules(task, all_tasks):
@@ -20,8 +21,11 @@ def passes_business_rules(task, all_tasks):
 
     # Box truck check - ONLY prevent pull boxtruck tasks
     trailer_number = get_attr(task, "trailer", "") or get_attr(task, "trailer_number", "")
-    if get_attr(task, "yard_task_type", None) == "pull" and check_boxtrucks(trailer_number):
-        return False, f"Box trucks (trailer: {trailer_number}) are not allowed for pull tasks."
+    assigned_to = get_attr(task, "assigned_to", "")
+    if get_attr(task, "yard_task_type", None) == "pull":
+        if assigned_to == "" or assigned_to is None:
+            if check_boxtrucks(trailer_number):
+                return False, f"Box trucks (trailer: {trailer_number}) are not allowed for pull tasks."
 
     # Preventative maintenance check
     yard_task_type = get_attr(task, "yard_task_type", "")
@@ -37,9 +41,9 @@ def passes_business_rules(task, all_tasks):
         if not ("MTY" in trailer_number.upper() or "EMPTY" in trailer_number.upper()):
             for other in all_tasks:
                 if (
-                    other is not task
-                    and get_attr(other, "yard_task_type") == yard_task_type
-                    and (get_attr(other, "trailer", "") or get_attr(other, "trailer_number", "")) == trailer_number
+                        other is not task
+                        and get_attr(other, "yard_task_type") == yard_task_type
+                        and (get_attr(other, "trailer", "") or get_attr(other, "trailer_number", "")) == trailer_number
                 ):
                     return False, f"Duplicate {yard_task_type} for trailer {trailer_number} is not allowed."
     return True, None
@@ -96,14 +100,20 @@ def is_allowed_type(task_dict):
 
 
 async def delete_task_external(case_id, task_store, session_manager=None):
-    # TODO: This does not belong here
     """Delete a task from the external system or just the local store."""
-    if session_manager is not None:
-        await session_manager.run_delete_task(case_id)
-        if await task_store.get_task(case_id) is not None:
+    if case_id in _deleting_ids:
+        logger.error(f"Recursion detected: Already deleting case_id {case_id}")
+        return
+    _deleting_ids.add(case_id)
+    try:
+        if session_manager is not None:
+            await session_manager.run_delete_task(case_id)
+            if await task_store.get_task(case_id) is not None:
+                await task_store.delete_task(case_id)
+        else:
             await task_store.delete_task(case_id)
-    else:
-        await task_store.delete_task(case_id)
+    finally:
+        _deleting_ids.remove(case_id)
 
 
 async def validate_and_store_task(task_dict, task_store, session_manager=None, all_tasks=None):
@@ -111,6 +121,8 @@ async def validate_and_store_task(task_dict, task_store, session_manager=None, a
     Validate and store a single task. If not valid, delete externally (if possible).
     Returns stored Task or None.
     """
+    logger.info(f"Hostler validate/store: {task_dict}")  # <-- NEW: log every incoming task
+
     if not is_allowed_type(task_dict):
         logger.info(
             f"Deleting unwanted yard task type: {get_attr(task_dict, 'type')} for case {get_attr(task_dict, 'case_id') or get_attr(task_dict, 'id')}")
@@ -118,6 +130,7 @@ async def validate_and_store_task(task_dict, task_store, session_manager=None, a
         return None
     try:
         task = TaskAdapter.validate_python(task_dict)
+        logger.info(f"Task validated: {get_attr(task_dict, 'case_id') or get_attr(task_dict, 'id')}")
     except Exception as e:
         logger.error(
             f"Could not validate task: {task_dict}, error: {repr(e)}; details: {getattr(e, 'errors', lambda: None)()}")
@@ -131,6 +144,7 @@ async def validate_and_store_task(task_dict, task_store, session_manager=None, a
         return None
     try:
         await task_store.upsert_task(task.model_dump())
+        logger.info(f"Hostler task stored: {get_attr(task_dict, 'case_id') or get_attr(task_dict, 'id')}")
         return task
     except Exception as e:
         logger.error(f"Could not store valid task: {task_dict}, error: {e}")
@@ -140,23 +154,29 @@ async def validate_and_store_task(task_dict, task_store, session_manager=None, a
 async def validate_and_store_tasks(task_dicts, task_store, session_manager=None):
     """
     Deduplicate, validate, and store multiple tasks.
-    Delete invalid and deduplicated-out tasks externally if possible.
+    Only delete invalid and unwanted type tasks externally if possible.
     Returns only the valid, stored Task instances.
     """
-    deduped_task_dicts = deduplicate_tasks(task_dicts)
-    deduped_ids = {get_attr(t, "case_id") or get_attr(t, "id") for t in deduped_task_dicts}
-    all_ids = {get_attr(t, "case_id") or get_attr(t, "id") for t in task_dicts}
-    # Find tasks that were filtered out by deduplication
-    removed_ids = all_ids - deduped_ids
+    # Delete unwanted types BEFORE deduplication
     for t in task_dicts:
-        tid = get_attr(t, "case_id") or get_attr(t, "id")
-        if tid in removed_ids:
-            await delete_task_external(tid, task_store, session_manager)
-    # Now validate and store deduped tasks
+        if not is_allowed_type(t):
+            logger.info(f"Deleting unwanted yard task type: {get_attr(t, 'type') or get_attr(t, 'yard_task_type')} for case {get_attr(t, 'case_id') or get_attr(t, 'id')}")
+            await delete_task_external(get_attr(t, "case_id") or get_attr(t, "id"), task_store, session_manager)
+
+    # Filter wanted tasks
+    wanted_tasks = [t for t in task_dicts if is_allowed_type(t)]
+    deduped_task_dicts = deduplicate_tasks(wanted_tasks)
+
+    # DO NOT delete tasks that are missing from the poll!
+    # Only delete if explicitly directed by you or upstream (e.g., status='DELETED' or via API)
+
+    # Validate and store deduped tasks
     valid_tasks = []
     for task_dict in deduped_task_dicts:
+        other_tasks = [t for t in deduped_task_dicts if (get_attr(t, "case_id") or get_attr(t, "id")) != (
+                    get_attr(task_dict, "case_id") or get_attr(task_dict, "id"))]
         task = await validate_and_store_task(
-            task_dict, task_store, session_manager=session_manager, all_tasks=valid_tasks
+            task_dict, task_store, session_manager=session_manager, all_tasks=other_tasks
         )
         if task:
             valid_tasks.append(task)

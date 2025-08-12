@@ -4,23 +4,27 @@ import { TASK_TYPES } from "../constants/taskTypes";
 
 /**
  * Props:
- * - onDropRecycle: function(task) -- called when a task is dropped on the bin
+ * - onDropRecycle: function(task)
+ * - tasks?: number[] (optional counter display)
  */
 function RecycleBin({ onDropRecycle, tasks = [] }) {
-  // Accept all task types except EMPTY
-  const acceptTypes = [
+  const baseTypes = [
     TASK_TYPES.PULL,
     TASK_TYPES.BRING,
     TASK_TYPES.HOOK,
     TASK_TYPES.HOSTLER,
     TASK_TYPES.WORKBASKET,
-  ];
+  ].filter(Boolean);
+
+  // accept the lowercase versions because TaskCard uses lowercase drag types
+  const acceptTypes = baseTypes.map((t) => String(t).toLowerCase());
 
   const [{ isOver, canDrop }, drop] = useDrop({
     accept: acceptTypes,
-    canDrop: (item) => item.task.type !== TASK_TYPES.EMPTY,
+    canDrop: (item) => String(item?.task?.type || "").toLowerCase() !== String(TASK_TYPES.EMPTY || "empty").toLowerCase(),
     drop: (item) => {
-      if (onDropRecycle) onDropRecycle(item.task);
+      const t = item?.task;
+      if (t && onDropRecycle) onDropRecycle(t);
     },
     collect: (monitor) => ({
       isOver: monitor.isOver(),
@@ -47,7 +51,7 @@ function RecycleBin({ onDropRecycle, tasks = [] }) {
       <span style={{ fontSize: "2rem", fontWeight: 700, color: "#6bbfbf" }}>
         Recycle Bin
       </span>
-      {tasks.length > 0 && (
+      {Array.isArray(tasks) && tasks.length > 0 && (
         <div style={{ marginTop: 8, fontSize: "1rem", color: "#bfeefb" }}>
           {tasks.length} task{tasks.length > 1 ? "s" : ""} in bin
         </div>

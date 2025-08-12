@@ -23,12 +23,21 @@ class HostlerStore:
     async def lookup_checker_id(self, assigned_name: str) -> str:
         key = f"hostler:name:{assigned_name.lower()}"
         checker_id = await self.redis.get(key)
-        return checker_id.decode() if isinstance(checker_id, bytes) else (checker_id or "")
+        if isinstance(checker_id, bytes):
+            return checker_id.decode()
+        elif isinstance(checker_id, str):
+            return checker_id
+        else:
+            return ""
 
     async def get_hostler(self, checker_id: str) -> dict:
         key = f"hostler:{checker_id}"
         data = await self.redis.get(key)
-        return json.loads(data.decode()) if data else {}
+        if not data:
+            return {}
+        if isinstance(data, bytes):
+            data = data.decode()
+        return json.loads(data)
 
     async def list_hostlers(self) -> list:
         keys = await self.redis.keys("hostler:*")
@@ -38,6 +47,9 @@ class HostlerStore:
             if (isinstance(key, bytes) and b':name:' in key) or (isinstance(key, str) and ':name:' in key):
                 continue
             data = await self.redis.get(key)
-            if data:
-                hostlers.append(json.loads(data.decode()))
+            if not data:
+                continue
+            if isinstance(data, bytes):
+                data = data.decode()
+            hostlers.append(json.loads(data))
         return hostlers

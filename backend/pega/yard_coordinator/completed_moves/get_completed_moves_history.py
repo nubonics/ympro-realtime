@@ -1,5 +1,6 @@
-import pandas as pd
-import io
+import asyncio
+import re
+from uuid import uuid4
 
 from backend.modules.colored_logger import setup_logger
 
@@ -8,137 +9,121 @@ logger = setup_logger(__name__)
 
 class GetCompletedMovesHistory:
     """
-    Downloads completed moves history as an Excel file from Pega,
-    and parses it to a pandas DataFrame.
-    Requires all session/context injected via set_pega_data().
+    Async workflow for Pega 'Reports' portal navigation, using existing session manager.
     """
 
-    def __init__(self):
-        self.async_client = None
-        self.base_url = None
-        self.pzHarnessID = None
-        self.pzTransactionId = None
+    def __init__(self, session_manager):
+        self.session_manager = session_manager
+        self.async_client = session_manager.async_client
+        self.base_url = session_manager.base_url.rstrip('/')
+        self.pzHarnessID = session_manager.pzHarnessID
+        self.csrf_token = session_manager.csrf_token
+        self.fingerprint_token = session_manager.fingerprint_token
+        self.debug_html = session_manager.debug_html
+        self.dynamicContainerID = None
 
-    def set_pega_data(self, base_url, async_client, pzHarnessID, pzTransactionId):
-        self.base_url = base_url.rstrip('/')
-        self.async_client = async_client
-        self.pzHarnessID = pzHarnessID
-        self.pzTransactionId = pzTransactionId
-
-    async def download_report(self, pzuiactionzzz, eventSrcSection="Code-Pega-List.pyReportEditorHeader"):
+    async def get_homepage(self):
         """
-        Triggers the report to be generated and downloaded.
-        Returns: (content, content_type, headers)
+        Step 1: GET the reports homepage and extract dynamicContainerID (tabGrpName).
         """
-        url = (
-            f"{self.base_url}/!DCSPA_YardCoordinator"
-            f"?pzTransactionId={self.pzTransactionId}"
-            f"&pzFromFrame=pyReportContentPage"
-            f"&pzPrimaryPageName=pyReportContentPage"
-            f"&AJAXTrackID=7"
-            f"&eventSrcSection={eventSrcSection}"
-        )
-        payload = (
-            f"pzuiactionzzz={pzuiactionzzz}"
-            "&$OControlMenu=&$ODesktopWrapperInclude=&$ODeterminePortalTop="
-            "&$ODynamicLayout=&$ODynamicLayoutCell=&$OEvalDOMScripts_Include=&$OForm="
-            "&$OGridInc=&$OHarness=&$OHarnessStaticJSEnd=&$OHarnessStaticJSStart="
-            "&$OHarnessStaticScriptsClientValidation=&$OLaunchFlow=&$OMenuBar="
-            "&$OMenuBarOld=&$OPMCPortalStaticScripts=&$OSessionUser=&$OSurveyStaticScripts="
-            "&$OWorkformStyles=&$OmenubarInclude=&$OpxButton=&$OpxDisplayText="
-            "&$OpxHarnessContainer=&$OpxHarnessContent=&$OpxLayoutContainer="
-            "&$OpxLayoutHeader=&$OpxLink=&$OpxNonTemplate=&$OpxSection=&$OpxVisible="
-            "&$OpyDirtyCheckConfirm=&$OpyWorkFormStandardEnd=&$OpyWorkFormStandardStart="
-            "&$OpzDecimalInclude=&$OpzHarnessInlineScriptsEnd=&$OpzHarnessInlineScriptsStart="
-            "&$Opzpega_ui_harnesscontext=&$OxmlDocumentInclude="
-            "&UITemplatingStatus=N"
-            "&inStandardsMode=true"
-            f"&pzHarnessID={self.pzHarnessID}"
-            f"&eventSrcSection={eventSrcSection}"
-        )
-        response = await self.async_client.post(url, data=payload)
-        logger.debug(f"Download report response status: {response.status_code}")
-        assert response.status_code == 200
-        return response.content, response.headers.get("content-type"), response.headers
-
-    async def get_menu(self):
-        """
-        Optionally used to fetch menu/actions for the report after download (not always necessary).
-        """
-        url = (
-            f"{self.base_url}/!DCSPA_YardCoordinator"
-            f"?pzTransactionId={self.pzTransactionId}"
-            f"&pzFromFrame=pyReportContentPage"
-            f"&pzPrimaryPageName=pyReportContentPage"
-            f"&AJAXTrackID=7"
-        )
-        payload = (
-            "pyActivity=pzGetMenu"
-            "&$OControlMenu=&$ODesktopWrapperInclude=&$ODeterminePortalTop="
-            "&$ODynamicLayout=&$ODynamicLayoutCell=&$OEvalDOMScripts_Include=&$OForm="
-            "&$OGridInc=&$OHarness=&$OHarnessStaticJSEnd=&$OHarnessStaticJSStart="
-            "&$OHarnessStaticScriptsClientValidation=&$OLaunchFlow=&$OMenuBar="
-            "&$OMenuBarOld=&$OPMCPortalStaticScripts=&$OSessionUser=&$OSurveyStaticScripts="
-            "&$OWorkformStyles=&$OmenubarInclude=&$OpxButton=&$OpxDisplayText="
-            "&$OpxHarnessContainer=&$OpxHarnessContent=&$OpxLayoutContainer="
-            "&$OpxLayoutHeader=&$OpxLink=&$OpxNonTemplate=&$OpxSection=&$OpxVisible="
-            "&$OpyDirtyCheckConfirm=&$OpyWorkFormStandardEnd=&$OpyWorkFormStandardStart="
-            "&$OpzDecimalInclude=&$OpzHarnessInlineScriptsEnd=&$OpzHarnessInlineScriptsStart="
-            "&$Opzpega_ui_harnesscontext=&$OxmlDocumentInclude="
-            "&navName=pzReportActions"
-            "&pzKeepPageMessages=true"
-            "&removePage=true"
-            "&UITemplatingStatus=Y"
-            "&ContextPage=pyReportContentPage"
-            "&showmenucall=true"
-            "&navPageName=pyNavigation1694967022235"
-            f"&pzHarnessID={self.pzHarnessID}"
-            "&inStandardsMode=true"
-        )
-        response = await self.async_client.post(url, data=payload)
-        logger.debug(f"Get menu response status: {response.status_code}")
-        return response
-
-    async def cleanup_report(self, pyPagesToRemove):
-        """
-        Cleans up the temporary report state in Pega after download (optional).
-        """
-        url = (
-            f"{self.base_url}/!DCSPA_YardCoordinator"
-            "?pyActivity=pyDeleteDocumentPg"
-            "&pzFromFrame=pyReportContentPage"
-            "&pzPrimaryPageName=pyReportContentPage"
-            f"&pzHarnessID={self.pzHarnessID}"
-            "&pzKeepPageMessages=true"
-            "&AJAXTrackID=7"
-        )
-        payload = f"pyPagesToRemove={pyPagesToRemove}"
-        response = await self.async_client.post(url, data=payload)
-        logger.debug(f"Cleanup report response status: {response.status_code}")
+        url = self.session_manager.base_url
+        headers = {
+            **self.session_manager.get_standard_headers(),
+            "Referer": self.base_url,
+        }
+        logger.debug(f'[Step 1] headers: {headers}')
+        response = await self.async_client.get(url, headers=headers, follow_redirects=True)
+        self._save_html(response.content, "homepage")
+        self.dynamicContainerID = self._extract_dynamic_container_id(response.text)
+        logger.info(f"Extracted dynamicContainerID: {self.dynamicContainerID}")
         return response
 
     @staticmethod
-    def parse_excel_to_dataframe(content):
-        """
-        Given a bytes Excel file, parse it to a pandas DataFrame.
-        """
-        try:
-            df = pd.read_excel(io.BytesIO(content))
-            logger.info("Successfully parsed Excel to DataFrame.")
-            return df
-        except Exception as e:
-            logger.error(f"Failed to parse Excel: {e}")
-            return None
+    def _extract_dynamic_container_id(html_text):
+        match = re.search(r'"tabGrpName"\s*:\s*"([0-9a-fA-F\-]{36})"', html_text)
+        if match:
+            return match.group(1)
+        match2 = re.search(r'tabGrpName\s*=\s*[\'"]([0-9a-fA-F\-]{36})[\'"]', html_text)
+        if match2:
+            return match2.group(1)
+        return None
 
-    async def get_completed_moves_history(self, pzuiactionzzz, pyPagesToRemove):
+    async def post_portal_navigation(self):
         """
-        Orchestrates the full process: download, parse, cleanup.
-        Returns a pandas DataFrame.
+        Step 2: POST to the portal navigation using extracted dynamicContainerID.
         """
-        # 1. Download Excel
-        content, content_type, headers = await self.download_report(pzuiactionzzz)
-        # 2. Parse to DataFrame
-        df = self.parse_excel_to_dataframe(content)
-        # 3. Clean up (optional)
-        await self.cleanup_report(pyPagesToRemove)
-        return df
+        contentID = str(uuid4())
+        payload_template = (
+            'pyActivity=%40baseclass.doUIAction&isDCSPA=true&$OCompositeGadget=&$OControlMenu=&$ODesktopWrapperInclude=&$ODeterminePortalTop='
+            '&$ODynamicContainerFrameLess=&$ODynamicLayout=&$ODynamicLayoutCell=&$OEvalDOMScripts_Include=&$OForm='
+            '&$OGapIdentifier=&$OGridInc=&$OHarness=&$OHarnessStaticJSEnd=&$OHarnessStaticJSStart='
+            '&$OHarnessStaticScriptsClientValidation=&$OHarnessStaticScriptsExprCal=&$OLaunchFlow=&$OMenuBar='
+            '&$OMenuBarOld=&$OMobileAppNotify=&$OOperatorPresenceStatusScripts=&$OPMCPortalStaticScripts='
+            '&$ORepeatingDynamicLayout=&$OSessionUser=&$OSurveyStaticScripts=&$OWorkformStyles=&$Ocosmoslocale='
+            '&$OmenubarInclude=&$OpxButton=&$OpxDisplayText=&$OpxDropdown=&$OpxDynamicContainer='
+            '&$OpxHarnessContent=&$OpxHeaderCell=&$OpxHidden=&$OpxIcon=&$OpxLayoutContainer='
+            '&$OpxLayoutHeader=&$OpxLink=&$OpxMenu=&$OpxNonTemplate=&$OpxSection=&$OpxTextInput='
+            '&$OpxVisible=&$OpxWorkArea=&$OpxWorkAreaContent=&$OpyDirtyCheckConfirm='
+            '&$OpyWorkFormStandardEnd=&$OpyWorkFormStandardStart=&$Opycosmoscustomstyles='
+            '&$OpzAppLauncher=&$OpzDecimalInclude=&$OpzFrameLessDCScripts=&$OpzHarnessInlineScriptsEnd='
+            '&$OpzHarnessInlineScriptsStart=&$OpzPegaCompositeGadgetScripts=&$OpzRuntimeToolsBar='
+            '&$Opzpega_ui_harnesscontext=&$Ordlincludes=&$OxmlDocumentInclude='
+            '&isSDM=true&action=display&label=Reports&className=ESTES-OPS-YardMgmt-UIPages'
+            '&harnessName=Reports&contentID={contentID}&dynamicContainerID={dynamicContainerID}&SkipConflictCheck=true'
+            '&readOnly=false&tabName=Reports&replaceCurrent=false&api=display'
+            '&portalName=YardCoordinator&portalThreadName=STANDARD&tabIndex=1'
+            f'&pzHarnessID={self.pzHarnessID}&UITemplatingStatus=Y&inStandardsMode=true&eventSrcSection=Data-Portal.PortalNavigation'
+        )
+        payload = payload_template.format(
+            contentID=contentID,
+            dynamicContainerID=self.dynamicContainerID or str(uuid4())
+        )
+        headers = {
+            **self.session_manager.get_standard_headers(),
+            "pzctkn": self.csrf_token,
+            "pzbfp": self.fingerprint_token,
+            "Origin": self.base_url,
+        }
+        url = f"{self.base_url}/!DCSPA_YardCoordinator?eventSrcSection=Data-Portal.PortalNavigation"
+        response = await self.async_client.post(url, headers=headers, data=payload.encode('utf-8'), follow_redirects=True)
+        self._save_html(response.content, "reports_portal")
+        logger.info(f"Step 2 POST status: {response.status_code}")
+        logger.debug(f'[Step 2] headers: {headers}')
+        return response
+
+    async def get_reports_shortcut(self):
+        """
+        Step 3: GET the actual reports page (shortcut).
+        """
+        headers = {
+            **self.session_manager.get_standard_headers(),
+        }
+        url = (
+            f"{self.base_url}/!DCSPA_YardCoordinator"
+            "?pyActivity=%40baseclass.doUIAction"
+            "&pyReportClass=ESTES-OPS-YardMgmt-Work-Task"
+            "&pyShortcutHandle=YARDMANAGEMENT!S!ALL!TASKLISTBYJOCKEYWISE"
+            "&action=reportDefinition"
+            "&ReportAction=shortcut"
+            "&pyDisplayTarget=popup"
+            "&target=popup"
+            "&portalThreadName=DCSPA_YardCoordinator"
+            "&portalName=YardCoordinator"
+            "&eventSrcSection=Data-Portal.PortalNavigation"
+            f"&pzHarnessID={self.pzHarnessID}"
+        )
+        response = await self.async_client.get(url, headers=headers, follow_redirects=True)
+        self._save_html(response.content, "reports_page")
+        logger.info(f"Step 3 GET shortcut status: {response.status_code}")
+        logger.debug(f'[Step 3] headers: {headers}')
+        return response
+
+    def _save_html(self, content, name):
+        if self.debug_html:
+            with open(f"{name}.html", "wb") as f:
+                f.write(content)
+
+    async def run(self):
+        await self.get_homepage()
+        await self.post_portal_navigation()
+        await self.get_reports_shortcut()

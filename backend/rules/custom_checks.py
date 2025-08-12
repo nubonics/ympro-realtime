@@ -15,8 +15,8 @@ def check_boxtrucks(trailer_number: str) -> bool:
         return False
     trailer_number = trailer_number.upper()
     trailer_number = trailer_number.strip("'\"")
-    print("Checking boxtruck:", trailer_number)  # <-- Debug print
-    print("Checking boxtruck:", repr(trailer_number))  # <-- Debug print
+    # print("Checking boxtruck:", trailer_number)  # <-- Debug print
+    # print("Checking boxtruck:", repr(trailer_number))  # <-- Debug print
     return (
             trailer_number.startswith("19")
             or trailer_number.startswith("10")

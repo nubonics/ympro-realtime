@@ -4,6 +4,7 @@ from backend.modules.colored_logger import setup_logger
 from backend.modules.storage import get_checker_id_by_name
 from backend.pega.yard_coordinator.transfer.transfer_from_hostler_to_workbasket import TransferFromHostlerToWorkbasket
 from backend.pega.yard_coordinator.transfer.transfer_from_workbasket_to_hostler import TransferFromWorkbasketToHostler
+from backend.pega.yard_coordinator.session_manager.pega_parser import get_row_page
 
 logger = setup_logger(__name__)
 
@@ -41,8 +42,8 @@ class TransferTask:
         assigned_to = (self.assigned_to or "").strip().lower()
         if assigned_to in ("", "workbasket", None):
             # Hostler → Workbasket
-            row_page = self.extra.get("row_page")
             base_ref = self.extra.get("base_ref")
+            row_page = get_row_page(base_ref=base_ref)
             if not (row_page and base_ref):
                 raise ValueError("row_page and base_ref are required for hostler → workbasket transfer.")
             transfer = TransferFromHostlerToWorkbasket(

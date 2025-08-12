@@ -1,0 +1,20 @@
+# TODO
+- [x] sidebar icons get tiny when the sidebar is collapsed
+- [ ] copy trailer number should be toasted instead of put in the container
+- [ ] after hovering a task for 3 seconds, the details arent really the ones i want
+- [ ] a new workbasket container is created if there are moves in the workbasket
+- [ ] pull, bring are not centered and dont have a high opacity
+- [ ] lock button does not do anything
+  - [ ] locked task does not do anything
+- [ ] there is no way to see if a task is pending, or completed
+- [ ] currently, there is no move history
+- [ ] none of the sidebar pages work because they dont exist
+  - [ ] bulk
+  - [ ] tracking
+    - [ ] bnsf
+    - [ ] fleet locate
+  - [ ] tutorial
+  - [ ] feedback
+  - [ ] rules
+  - [ ] settings [ no sidebar link yet ]
+- [ ] replace playwright delete task with async httpx

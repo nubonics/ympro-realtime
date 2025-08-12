@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef } from "react";
-import { toast } from "react-toastify";
 import Sidebar from "./components/Sidebar";
 import Container from "./components/Container";
 import EmptiesContainer from "./components/EmptiesContainer";
@@ -7,12 +6,11 @@ import RecycleBin from "./components/RecycleBin";
 import { DndProvider } from "react-dnd";
 import { HTML5Backend } from "react-dnd-html5-backend";
 import { TASK_TYPES } from "./constants/taskTypes";
-import { validateTask } from "./utils/api";
 import "./styles.css";
+import { buildTasksWS } from "./lib/ws";
+import { mapTasksFromApi } from "./utils/mapFromApi";
 
-// Environment variables for Vite
-const USE_WS = import.meta.env.VITE_USE_WS === "true";
-const API_URL = import.meta.env.VITE_API_URL;
+const API_URL = import.meta.env.VITE_API_URL; // e.g. http://localhost:8000/api
 
 const EMPTY_TASKS = [
   { label: "MTY PUP", type: TASK_TYPES.EMPTY },
@@ -23,134 +21,99 @@ const EMPTY_TASKS = [
 ];
 
 function groupTasksByHostler(tasks) {
-  const hostlerMap = {};
-  tasks.forEach(task => {
-    const hostler = task.hostler || "Unassigned";
-    if (!hostlerMap[hostler]) hostlerMap[hostler] = [];
-    hostlerMap[hostler].push(task);
+  const byHost = {};
+  (Array.isArray(tasks) ? tasks : []).forEach((t) => {
+    const h = t?.hostler || "Unassigned";
+    (byHost[h] ||= []).push(t);
   });
-  return Object.entries(hostlerMap)
-    .filter(([name]) => name !== "Unassigned")
+  return Object.entries(byHost)
+    .filter(([n]) => n !== "Unassigned")
     .map(([name, tasks]) => ({ name, tasks }));
 }
 
-function App() {
+export default function App() {
   const [allTasks, setAllTasks] = useState([]);
-  const [recycleBin, setRecycleBin] = useState([]);
+  const [recycleBin] = useState([]);
   const wsRef = useRef(null);
+  const rollbackRef = useRef(null);
 
-  // WebSocket connection if enabled
   useEffect(() => {
-    if (!USE_WS) return;
+    let retry = 0;
+    let alive = true;
 
-    let ws;
-    try {
-      ws = new window.WebSocket("ws://localhost:8052/ws/tasks");
+    const connect = () => {
+      const ws = new WebSocket(buildTasksWS());
       wsRef.current = ws;
+
       ws.onopen = () => {
-        console.log("WebSocket connected");
+        retry = 0;
+        console.log("WS open");
       };
-      ws.onmessage = (event) => {
-        console.log("WS message received", event.data); // for debugging!
+
+      ws.onmessage = (ev) => {
         try {
-          const data = JSON.parse(event.data);
-          if (Array.isArray(data)) setAllTasks(data);
-        } catch (err) {
-          console.error("WS message parse error:", err);
-        }
-      };
-      ws.onerror = (err) => {
-        console.error("WebSocket error:", err);
-      };
-      ws.onclose = (event) => {
-        console.warn("WebSocket closed:", event);
-      };
-    } catch (err) {
-      console.error("WebSocket connection failed:", err);
-    }
-    return () => { if (ws) ws.close(); };
-  }, []);
-
-  // HTTP polling for tasks as fallback (when WS not enabled)
-  useEffect(() => {
-    if (USE_WS) return; // Skip polling if using WS
-
-    let intervalId;
-    const fetchTasks = async () => {
-      try {
-        const res = await fetch(`${API_URL}/external-tasks`);
-        const data = await res.json();
-        setAllTasks(Array.isArray(data) ? data : (Array.isArray(data.tasks) ? data.tasks : []));
-      } catch (err) {
-        console.error("Polling error:", err);
-      }
-    };
-    fetchTasks();
-    intervalId = setInterval(fetchTasks, 5000);
-
-    return () => clearInterval(intervalId);
-  }, []);
-
-  const workbasket = allTasks.filter(t => !t.hostler);
-  const hostlerGroups = groupTasksByHostler(allTasks);
-
-    const handleDropEmpty = async (emptyTask, pullTask) => {
-      const isWorkbasketPull = !pullTask.hostler;
-
-      const bringTask = {
-        type: "bring",
-        id: `bring-${Date.now()}`,
-        door: pullTask.door,
-        trailer: emptyTask.label,
-        zoneType: pullTask.zoneType,
-        zoneLocation: pullTask.zoneLocation,
-        note: `From pull of ${pullTask.trailer}`,
-        priority: "normal",
-        hostler: isWorkbasketPull ? undefined : pullTask.hostler,
+          const data = JSON.parse(ev.data);
+          if (data && typeof data === "object" && data.type === "ping") return;
+          if (Array.isArray(data)) {
+            setAllTasks(mapTasksFromApi(data));
+            return;
+          }
+          if (data && Array.isArray(data.tasks)) {
+            setAllTasks(mapTasksFromApi(data.tasks));
+            return;
+          }
+        } catch {}
       };
 
-      try {
-        const res = await fetch(`${API_URL}/create-task`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(bringTask),
-        });
-        if (!res.ok) {
-          const errorData = await res.json();
-          alert(errorData.message || "Not allowed by rules.");
-        }
-      } catch (err) {
-        alert("An error occurred: " + (err.message || err));
-      }
+      ws.onerror = () => console.warn("WS error");
+
+      ws.onclose = () => {
+        if (!alive) return;
+        const delay = Math.min(30000, 1000 * 2 ** retry++);
+        console.warn("WS closed, reconnecting in", delay, "ms");
+        setTimeout(connect, delay);
+      };
     };
 
-  // ---- Handler: Move a task to a different hostler ----
-  const handleDropHostlerTask = async (task, newHostler) => {
-    await fetch(`${API_URL}/update-task-hostler`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: task.id, hostler: newHostler }),
-    });
-  };
+    connect();
+    return () => {
+      alive = false;
+      try { wsRef.current?.close(); } catch {}
+    };
+  }, []);
 
-  // ---- Handler: Move a task to the workbasket (unassign hostler) ----
-  const handleDropToWorkbasket = async (task) => {
-    await fetch(`${API_URL}/update-task-hostler`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: task.id, hostler: "" })
-    });
-  };
+  const workbasket = (allTasks || []).filter((t) => !t?.hostler);
+  const hostlerGroups = groupTasksByHostler(allTasks || []);
 
-  // ---- Handler: Delete task ----
+  const handleDropEmpty = async () => {};
+  const handleDropHostlerTask = async () => {};
+  const handleDropToWorkbasket = async () => {};
+
+  // drag-to-delete: optimistic remove, POST to backend, rollback on failure
   const handleDropRecycle = async (task) => {
-    setAllTasks(tasks => tasks.filter(t => t.id !== task.id));
-    toast.success("Task deleted!");
-    await fetch(`${API_URL}/delete-task`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: task.id }),
+    const id = task?.id ?? task?.case_id;
+    if (!id) return;
+
+    setAllTasks((prev) => {
+      rollbackRef.current = prev;
+      return prev.filter((t) => (t.id ?? t.case_id) !== id);
     });
+
+    try {
+      const res = await fetch(`${API_URL}/delete-task`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ case_id: id }),
+      });
+      if (!res.ok) throw new Error(`Delete failed: ${res.status}`);
+      // backend should broadcast a fresh snapshot over WS; optimistic state already applied
+    } catch (e) {
+      // rollback if delete failed
+      if (rollbackRef.current) setAllTasks(rollbackRef.current);
+      console.error(e);
+    } finally {
+      rollbackRef.current = null;
+    }
   };
 
   return (
@@ -158,7 +121,6 @@ function App() {
       <div className="layout-root">
         <Sidebar />
         <main className="main-board">
-          {/* Empties and recycle bin row */}
           <div className="empties-recycle-row">
             <EmptiesContainer emptyTasks={EMPTY_TASKS} />
             <div className="recycle-bin-top">
@@ -166,7 +128,6 @@ function App() {
             </div>
           </div>
           <div className="board">
-            {/* WORKBASKET ALWAYS FIRST/LEFT */}
             <Container
               title="Workbasket"
               tasks={workbasket}
@@ -175,14 +136,13 @@ function App() {
               onDropEmpty={handleDropEmpty}
               isWorkbasket
             />
-            {/* HOSTLERS FILL OUT TO THE RIGHT */}
             {hostlerGroups.map(({ name, tasks }) => (
               <Container
                 key={name}
                 title={name}
                 tasks={tasks}
                 colorClass="hostler-container"
-                isHostlerContainer={true}
+                isHostlerContainer
                 onDropEmpty={handleDropEmpty}
                 onDropHostlerTask={handleDropHostlerTask}
               />
@@ -193,5 +153,3 @@ function App() {
     </DndProvider>
   );
 }
-
-export default App;

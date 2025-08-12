@@ -1,6 +1,7 @@
 import redis.asyncio as redis
 import json
 
+from backend.modules.storage import rebuild_tasks_set
 from backend.pega.yard_coordinator.utils import DateTimeEncoder
 
 
@@ -14,8 +15,10 @@ class TaskStore:
         if "case_id" not in task_data or task_data["case_id"] is None:
             raise ValueError("Task data must include a non-None 'case_id'")
         key = f"task:{task_data['case_id']}"
-        safe_data = json.dumps(task_data, cls=DateTimeEncoder)
+        # Save as pretty-printed JSON for human readability
+        safe_data = json.dumps(task_data, cls=DateTimeEncoder, indent=4)
         await self.redis.set(key, safe_data)
+        await rebuild_tasks_set(self.redis)
 
     async def get_task(self, case_id: str) -> dict:
         key = f"task:{case_id}"
@@ -31,30 +34,13 @@ class TaskStore:
                 tasks.append(json.loads(data))
         return tasks
 
-    async def list_tasks(self) -> list:
-        keys = await self.redis.keys("task:*")
-        tasks = []
-        for key in keys:
-            data = await self.redis.get(key)
-            if data:
-                tasks.append(json.loads(data))
-        return tasks
-
     async def delete_task(self, case_id: str):
         key = f"task:{case_id}"
         await self.redis.delete(key)
+        await rebuild_tasks_set(self.redis)
 
-    # --- Hostler methods below ---
-    async def upsert_hostler(self, hostler_data: dict):
-        if not hostler_data or not isinstance(hostler_data, dict):
-            raise ValueError("Attempted to upsert hostler with None or non-dict data")
-        if "checker_id" not in hostler_data or hostler_data["checker_id"] is None:
-            raise ValueError("Hostler data must include a non-None 'checker_id'")
-        key = f"hostler:{hostler_data['checker_id']}"
-        safe_data = json.dumps(hostler_data, cls=DateTimeEncoder)
-        await self.redis.set(key, safe_data)
-
-    async def get_hostler(self, checker_id: str) -> dict:
-        key = f"hostler:{checker_id}"
-        data = await self.redis.get(key)
-        return json.loads(data) if data else {}
+    async def clear_all_tasks(self):
+        keys = await self.redis.keys("task:*")
+        if keys:
+            await self.redis.delete(*keys)
+        await rebuild_tasks_set(self.redis)

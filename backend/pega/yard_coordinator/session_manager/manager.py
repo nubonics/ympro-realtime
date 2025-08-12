@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import json
 import os
 import re
 import time
@@ -10,12 +11,15 @@ import xxhash
 from dotenv import load_dotenv
 
 from backend.modules.colored_logger import setup_logger
+from backend.pega.yard_coordinator.completed_moves.get_completed_moves_history import GetCompletedMovesHistory
+from backend.pega.yard_coordinator.completed_moves.refresh_completed_moves import RefreshCompletedMoves
 from backend.pega.yard_coordinator.create_task.create_task import CreateTask
-from backend.pega.yard_coordinator.delete_task import DeleteTask
-from backend.pega.yard_coordinator.hostler_details import fetch_hostler_details
+from backend.pega.yard_coordinator.session_manager.delete_task import DeleteTask
+from backend.pega.yard_coordinator.session_manager.hostler_details import fetch_hostler_details
+from backend.pega.yard_coordinator.session_manager.models import ReCreateHostler, LoginError
+from backend.pega.yard_coordinator.open_case.open_case import OpenCase
 from backend.pega.yard_coordinator.session_manager.debug import save_html_to_file
-from backend.pega.yard_coordinator.session_manager.hostler_store import HostlerStore
-from backend.pega.yard_coordinator.session_manager.login_model import LoginError
+from backend.modules.hostler_store import HostlerStore
 from backend.pega.yard_coordinator.session_manager.pega_parser import (
     extract_pzuiactionzzz,
     extract_section_ids,
@@ -23,9 +27,11 @@ from backend.pega.yard_coordinator.session_manager.pega_parser import (
     extract_workbasket_tasks,
     extract_hostler_info,
 )
-from backend.pega.yard_coordinator.session_manager.pubsub import PubSubManager
-from backend.pega.yard_coordinator.session_manager.task_store import TaskStore
-from backend.pega.yard_coordinator.transfer_task import TransferTask
+from backend.modules.pubsub import PubSubManager
+from backend.modules.task_store import TaskStore
+from backend.pega.yard_coordinator.toggle_hostler_status.create_hostler import CreateHostler
+from backend.pega.yard_coordinator.toggle_hostler_status.delete_hostler import DeleteHostler
+from backend.pega.yard_coordinator.transfer.transfer_task import TransferTask
 from backend.rules.validation import validate_and_store_tasks, delete_task_external
 
 logger = setup_logger(__name__)
@@ -33,12 +39,12 @@ env_path = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
     ".env"
 )
-# logger.debug(f"Loading environment variables from {env_path}")
 load_dotenv(dotenv_path=env_path)
 
 
 class PegaTaskSessionManager:
     def __init__(self, redis_client):
+        self.delete_hostler_pzuiactionzzz = None
         self.open_task_pzuiactionzzz = None
         self.pzTransactionId = None
         self.last_broadcast_payload = None
@@ -54,11 +60,6 @@ class PegaTaskSessionManager:
         self.details_url = None
         self.login_response_text = None
         self.debug_html = getenv('PEGA_DEBUG_SAVE_HTML', '').lower() in ('1', 'true', 'yes', 'on')
-        # logger.error(f'self.debug_html: {self.debug_html}')
-        # logger.error(f'self.debug_html: {type(self.debug_html)}')
-        # logger.error(f'self.debug_html: {repr(self.debug_html)}')
-        # logger.error(f'PEGA_DEBUG_SAVE_HTML: {getenv("PEGA_DEBUG_SAVE_HTML")}')
-        # logger.error(f'PEGA_DEBUG_SAVE_HTML bool: {bool(getenv("PEGA_DEBUG_SAVE_HTML"))}')
         self.fingerprint_token = self.generate_fingerprint_token()
         self.updated_hostler_summary = False
         self.hostler_store = HostlerStore(redis_client)
@@ -66,6 +67,7 @@ class PegaTaskSessionManager:
         self.hostler_data_memory = {}
         self.pubsub = PubSubManager(redis_client)
         self.deleter = DeleteTask()
+        self.pyPagesToRemove = ""
 
     @staticmethod
     def generate_fingerprint_token(seed=31):
@@ -84,25 +86,6 @@ class PegaTaskSessionManager:
         fingerprint_token = '{v2}' + xxhash.xxh128(values, seed=seed).hexdigest()
         return fingerprint_token
 
-    async def transfer_task(self, case_id, assigned_to, redis):
-        """
-        Looks up the task by ID from the store, and uses its context to transfer.
-        No need for base_ref parameter.
-        """
-        # Look up the task from Redis
-        task_data = await self.task_store.get_task(case_id)
-        if not task_data:
-            raise Exception(f"Task not found in store for id: {case_id}")
-
-        # Optionally, if you want to make sure the context is fresh, you could refetch hostler details here,
-        # but in most setups, your poller keeps the store up to date.
-
-        # Upsert (refresh) is optional, but doesn't hurt:
-        # await self.task_store.upsert_task(task_data)
-
-        # Use stored context for transfer
-        return await self.run_transfer_task(case_id, assigned_to, redis)
-
     def should_relogin(self, max_age_hours: int = 11) -> bool:
         if self.last_login_time is None:
             return True
@@ -112,13 +95,9 @@ class PegaTaskSessionManager:
     @staticmethod
     def extract_action_token(html_text):
         matches = re.findall(r'([A-Za-z0-9+=*/]{789,800})', html_text)
-        counter = 0
         for token in matches:
             if 789 <= len(token) <= 800:
                 token = token.replace('u003d', '')
-                # print(f'counter: {counter}')
-                # print(f'token: {token}')
-                # counter += 1
                 return token
         logger.error('Unable to find pzuiactionzzz for open_task_pzuiactionzzz')
         return None
@@ -156,8 +135,6 @@ class PegaTaskSessionManager:
             login_response = await self.async_client.post(redirected_url, data=login_data, follow_redirects=True)
             save_html_to_file(login_response.content, step=4, enabled=self.debug_html)
             logger.debug(f'is pega save html enabled? {self.debug_html}')
-            # logger.debug(f"username: {getenv('PEGA_USERNAME')}")
-            # logger.debug(f"PASSWORD: {getenv('PEGA_PASSWORD')}")
             self.login_response_text = login_response.text
             self.pzuiactionzzz = extract_pzuiactionzzz(self.login_response_text)
             logger.debug(f'self.pzuiactionzzz: {self.pzuiactionzzz}')
@@ -178,15 +155,12 @@ class PegaTaskSessionManager:
             raise LoginError(f"Login failed: {e}")
 
     async def fetch_all_pega_tasks(self):
-        # Fetch workbasket data
         logger.info('Fetching workbasket data...')
         workbasket_html = await self.fetch_workbasket_data()
         workbasket_data = extract_workbasket_tasks(workbasket_html)
         logger.debug('Workbasket data extracted:')
         for x in workbasket_data:
             logger.debug(x)
-
-        # BUSINESS VALIDATION: deduplicate, validate, delete invalids, store only valid
         try:
             valid_tasks = await validate_and_store_tasks(
                 workbasket_data, self.task_store, session_manager=self
@@ -194,16 +168,12 @@ class PegaTaskSessionManager:
         except Exception as e:
             logger.error(f"Error validating and storing workbasket tasks. {e}")
             raise
-
-        # Publish only valid tasks
         try:
             await self.pubsub.publish("workbasket_update", [t.model_dump() for t in valid_tasks])
         except Exception as e:
             logger.error(f"Failed to publish workbasket update: {e}")
             raise e
         logger.info('Workbasket tasks fetched, validated, and stored successfully.')
-
-        # Update hostler summary if needed
         logger.debug('Checking if hostler summary needs to be updated...')
         if not self.updated_hostler_summary and self.login_response_text:
             hostlers_summary = extract_hostler_info(self.login_response_text)
@@ -212,18 +182,20 @@ class PegaTaskSessionManager:
             self.updated_hostler_summary = True
             await self.pubsub.publish("hostler_summary_update", hostlers_summary)
         logger.debug('Hostler summary updated successfully.')
-
-        # Get hostler details for each base_ref
         logger.debug('Fetching hostler details for each base_ref...')
         try:
             hostler_payloads = await asyncio.gather(
                 *[fetch_hostler_details(base_ref=base_ref, session_manager=self) for base_ref in self.base_refs]
             )
+            logger.warning(hostler_payloads)
         except Exception as e:
             logger.error(f"Error fetching hostler payloads: {e}")
             raise e
         aggregated_payload = {"hostlers": hostler_payloads}
-        logger.debug(f'Aggregated hostler payload:\n{aggregated_payload}')
+        logger.debug(f'Aggregated hostler payload:\n')
+        for x in aggregated_payload:
+            logger.debug(json.dumps(x))
+
         await self.pubsub.publish("hostler_update", aggregated_payload)
         self.last_broadcast_payload = aggregated_payload
         logger.info('Hostler details fetched and broadcasted successfully.')
@@ -267,7 +239,6 @@ class PegaTaskSessionManager:
         await self.pubsub.publish("hostler_summary_update", hostlers_summary)
         return hostlers_summary
 
-    # Helper methods for headers, params, and pagelist property
     def get_standard_headers(self):
         return {
             "Accept": "*/*",
@@ -345,8 +316,6 @@ class PegaTaskSessionManager:
 
     @staticmethod
     def get_pagelist_property(hostler_details):
-        # Try to extract the correct PageListProperty from hostler_details or fallback
-        # Usually it's something like "D_FetchWorkListAssignments_pa1251034847119957pz.pxResults"
         for task in hostler_details.get("tasks", []):
             if "pagelist_property" in task:
                 return task["pagelist_property"]
@@ -362,7 +331,7 @@ class PegaTaskSessionManager:
             locked=locked,
             general_note=general_note,
             priority=priority,
-            hostler_store=self.hostler_store,  # Pass HostlerStore for Redis checker lookup
+            hostler_store=self.hostler_store,
         )
         task_creator.set_pega_data(
             base_url=self.base_url,
@@ -375,98 +344,74 @@ class PegaTaskSessionManager:
         return created_task_data
 
     async def run_delete_task(self, case_id: str):
-        """
-        Deletes a task by its Case ID.
-        """
-
-        # Delete the task from the backend / PEGA
+        # Delete the externally
         await self.deleter.delete_task(case_id=case_id)
-
-        # Delete the task from the backend / LOCAL Redis
+        # Delete the task from the local store
         await delete_task_external(case_id=case_id, task_store=self.task_store, session_manager=self)
 
-    async def run_transfer_task(self, case_id, assigned_to, redis):
+    async def run_transfer_task(self, case_id, assigned_to, target, redis):
         """
-        Handles all context lookup for transfer. Exposes a minimal API to FastAPI.
-        Uses only real, per-task/store values for Pega context.
+        Handles transfer logic for hostler->workbasket, workbasket->hostler, hostler->hostler.
+        Args:
+            case_id: The task/case id
+            assigned_to: The current assignment (hostler id or None for workbasket)
+            target: The desired assignment (hostler id or None for workbasket)
+            redis: Redis client
+        Returns:
+            The created task dictionary
         """
-        # 1. Lookup the task from the store
-        task_data = await self.task_store.get_task(case_id)
-        logger.debug(f'task_data: {task_data}')
-        if not task_data:
-            raise Exception(f"Task not found for id: {case_id}")
-
-        # Strictly require real per-row/page data (never synthesize)
-        row_page = task_data.get("row_page")
-        base_ref = task_data.get("base_ref")
-        fetch_worklist_pd_key = task_data.get("fetch_worklist_pd_key")
-        team_members_pd_key = task_data.get("team_members_pd_key")
-        section_id_list = task_data.get("section_id_list")
-        pzuiactionzzz = task_data.get("pzuiactionzzz")
-
-        # Log all context fields for easier debugging
-        logger.debug(
-            "Transfer context:\n"
-            f"  row_page: {row_page!r}\n"
-            f"  base_ref: {base_ref!r}\n"
-            f"  fetch_worklist_pd_key: {fetch_worklist_pd_key!r}\n"
-            f"  team_members_pd_key: {team_members_pd_key!r}\n"
-            f"  section_id_list: {section_id_list!r}\n"
-            f"  pzuiactionzzz: {pzuiactionzzz!r}"
-        )
-
-        # Check for missing or empty required fields
-        missing = []
-        for k, v in [
-            ("row_page", row_page),
-            ("base_ref", base_ref),
-            ("section_id_list", section_id_list),
-            ("pzuiactionzzz", pzuiactionzzz),
-        ]:
-            if v is None or v == "":
-                missing.append(k)
-        if missing:
-            logger.error(f"Missing required context for transfer: {', '.join(missing)}")
-            raise Exception(f"Missing required context for transfer: {', '.join(missing)}")
-
-        # Compose kwargs for TransferTask
-        kwargs = {
-            "row_page": row_page,
-            "base_ref": base_ref,
-            "fetch_worklist_pd_key": fetch_worklist_pd_key,
-            "team_members_pd_key": team_members_pd_key,
-            "section_id_list": section_id_list,
-            "pzuiactionzzz": pzuiactionzzz,
-        }
-
         task_transfer = TransferTask(
             case_id=case_id,
             assigned_to=assigned_to,
-            session_manager=self,
-            **kwargs
+            target=target,
+            session_manager=self
         )
         return await task_transfer.transfer(redis=redis)
 
     async def close(self):
         await self.async_client.aclose()
 
-    async def get_completed_hostler_history(self, hostler_id: str):
-        # TODO: Implement fetching completed history for all hostler
-        """
-        Fetch completed history for a hostler directly from Pega.
-        """
-        pass
+    async def get_completed_hostler_history(self):
+        await GetCompletedMovesHistory(session_manager=self).run()
 
     async def refresh_all_hostlers_history(self):
-        # TODO: Implement logic to refresh history for all hostlers
-        """
-        Actively refresh history for all hostlers from Pega.
-        """
-        pass
+        await RefreshCompletedMoves(session_manager=self).run()
 
-    async def set_hostler_offline(self, hostler_name: str):
-        # TODO: Setting a hostler offline can be done by deleting the hostler, and then recreating the hostler profile.
+    @staticmethod
+    async def open_case(case_id, session_manager):
         """
-        Set a hostler to offline status in Pega.
+        Opens a case by its ID.
+        Args:
+            case_id: The ID of the case to open.
+            session_manager: An instance of OpenCase to manage the session.
+        Returns:
+            The response from opening the case.
         """
-        pass
+        case = OpenCase(
+            case_id=case_id,
+            session_manager=session_manager,
+        )
+
+        return await case.run()
+
+    @staticmethod
+    async def delete_hostler(hostler: "ReCreateHostler", session_manager: "PegaTaskSessionManager"):
+        """
+        Deletes a hostler.
+        """
+        await DeleteHostler(session_manager=session_manager, hostler=hostler).run()
+
+    async def create_hostler(self, hostler: "ReCreateHostler", session_manager: "PegaTaskSessionManager"):
+        """
+        Creates a hostler.
+        """
+        await CreateHostler(session_manager=session_manager, hostler=hostler).run(self.delete_hostler_pzuiactionzzz)
+
+    async def recreate_hostler(self, hostler: "ReCreateHostler", session_manager: "PegaTaskSessionManager"):
+        """
+        Recreates a hostler.
+        """
+        self.delete_hostler_pzuiactionzzz = await self.delete_hostler(hostler=hostler, session_manager=session_manager)
+        await self.create_hostler(hostler=hostler, session_manager=session_manager)
+
+        return {"status": "ok"}
